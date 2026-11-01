@@ -514,7 +514,14 @@ const createNeteaseClientController = ({
         try { ws.close(); } catch (error) { /* already gone */ }
         return false;
       }
-      const result = await evaluate(getBootstrapSource());
+      const result = await evaluate(
+        // The client's webpack runtime is not reachable as a global, so the bootstrap cannot
+        // require the store by itself: first plant the require grabber through webpackJsonp
+        // (a throwaway entry module hands the page's own `require` to window), then run the
+        // bootstrap, which reads window.__gpt_cm_require__ (see electron/netease/clientBootstrap.js).
+        '(function(){try{webpackJsonp.push([[987660],{987660:function(module,exports,require){window.__gpt_cm_require__=require;}},[[987660]]]);}catch(e){if(window.__gpt_cm_require__===undefined){return{__foliaBootstrapBlocked:String(e&&e.message||e)};}}}());' +
+          getBootstrapSource(),
+      );
       if (gen !== generation) {
         try { ws.close(); } catch (error) { /* already gone */ }
         return false;
