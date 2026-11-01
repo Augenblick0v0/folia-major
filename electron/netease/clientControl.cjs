@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const { WebSocket } = require('ws');
+const { spawn, execFile } = require('child_process');
 const CHANNELS = require('./clientIpcChannels.cjs');
 
 // electron/netease/clientControl.cjs
@@ -106,6 +107,8 @@ const createNeteaseClientController = ({
   now = () => Date.now(),
   setTimeoutImpl = setTimeout,
   clearTimeoutImpl = clearTimeout,
+  spawnImpl = spawn,
+  execFileImpl = execFile,
   pollIntervalMs = 500,
   fetchTimeoutMs = 1500,
   evaluateTimeoutMs = 5000,
@@ -545,6 +548,80 @@ const createNeteaseClientController = ({
     }
   };
 
+  // --- Client self-heal ---------------------------------------------------------------
+  // The debug port only exists when the client was launched with
+  // --remote-debugging-port. A client the user started normally answers nothing on 9223, so
+  // "connect" would dead-end. Find the running exe (or a well-known install path), relaunch it
+  // with the flag, and wait for the debug endpoint. Windows-only by design.
+  const DEBUG_FLAG = `--remote-debugging-port=${DEBUG_PORT}`;
+  const CLIENT_RELAYOUT_MS = 12000;
+  const WELL_KNOWN_CLIENT_PATHS = [
+    'D:\\CloudMusic\\cloudmusic.exe',
+    'C:\\Program Files\\CloudMusic\\cloudmusic.exe',
+    'C:\\Program Files (x86)\\CloudMusic\\cloudmusic.exe',
+  ];
+
+  const isWindows = () => process.platform === 'win32';
+
+  const listRunningClientExePaths = () => new Promise((resolve) => {
+    execFileImpl('powershell.exe', [
+      '-NoProfile', '-Command',
+      "(Get-CimInstance Win32_Process -Filter \"name='cloudmusic.exe'\" | Select-Object -ExpandProperty ExecutablePath -Unique) -join '\\n'",
+    ], { timeout: 8000, windowsHide: true }, (error, stdout) => {
+      if (error || !stdout) return resolve([]);
+      resolve(String(stdout).split(/\r?\n/).map((line) => line.trim()).filter(Boolean));
+    });
+  });
+
+  const resolveClientExe = async () => {
+    const running = isWindows() ? await listRunningClientExePaths() : [];
+    const candidate = running.find((p) => p.toLowerCase().endsWith('cloudmusic.exe') && fs.existsSync(p));
+    if (candidate) return candidate;
+    const known = WELL_KNOWN_CLIENT_PATHS.find((p) => fs.existsSync(p));
+    return known || null;
+  };
+
+  const killRunningClients = () => new Promise((resolve) => {
+    if (!isWindows()) return resolve();
+    execFileImpl('taskkill', ['/F', '/IM', 'cloudmusic.exe', '/T'], { timeout: 8000, windowsHide: true }, () => resolve());
+  });
+
+  const waitUntilDebugPortAnswers = async (gen, deadlineMs) => {
+    while (now() < deadlineMs) {
+      if (gen !== generation) return false;
+      try {
+        const res = await fetchImpl(`${BASE_URL}/json/version`, { signal: AbortSignal.timeout(fetchTimeoutMs) });
+        if (res.ok) return true;
+      } catch (error) { /* not up yet; keep polling */ }
+      await new Promise((resolve) => setTimeoutImpl(resolve, 700));
+    }
+    return false;
+  };
+
+  const relaunchClientWithDebugPort = async (gen) => {
+    const exe = await resolveClientExe();
+    if (!exe) {
+      throw toClientError('client-not-found', '网易云音乐客户端未找到；请确认已安装，或先手动启动一次客户端。');
+    }
+    if (logger && typeof logger.info === 'function') logger.info(`[ClientTakeover] relaunching client with debug port: ${exe}`);
+    await killRunningClients();
+    await new Promise((resolve) => setTimeoutImpl(resolve, 1200));
+    if (gen !== generation) return;
+    const child = spawnImpl(exe, [DEBUG_FLAG], { detached: true, stdio: 'ignore', windowsHide: true });
+    try { child.unref(); } catch (error) { /* unref is best-effort */ }
+    const up = await waitUntilDebugPortAnswers(gen, now() + CLIENT_RELAYOUT_MS);
+    if (!up) {
+      throw toClientError('cdp-unreachable', `客户端已带调试参数重启，但端口 ${DEBUG_PORT} 未就绪；请稍后重试一次连接。`);
+    }
+  };
+
+  const looksLikeUnreachable = (error) => {
+    if (!error) return false;
+    if (error.code === 'cdp-unreachable' || error.code === 'client-not-found') return true;
+    const message = String(error.message || error);
+    return /fetch failed|ECONNREFUSED|cdp-unreachable/i.test(message);
+  };
+
   const runConnect = async (options) => {
     if (options.force === true) {
       await disconnectInternal({ pauseFirst: false });
@@ -559,7 +636,22 @@ const createNeteaseClientController = ({
     stopPolling();
     setConnectionState('connecting', null);
     try {
-      await establish(gen, false);
+      try {
+        await establish(gen, false);
+      } catch (error) {
+        // First attempt failed and the port looks dead: the client is probably running without
+        // the debug flag (a normal launch, an update, a reboot). Self-heal once: relaunch it
+        // with the flag, then retry. A stale generation or a non-unreachable error rethrows.
+        if (gen !== generation) return getStatus();
+        if (options.autoRelaunch !== false && looksLikeUnreachable(error)) {
+          setConnectionState('connecting', null);
+          await relaunchClientWithDebugPort(gen);
+          if (gen !== generation) return getStatus();
+          await establish(gen, false);
+        } else {
+          throw error;
+        }
+      }
     } catch (error) {
       if (gen !== generation) return getStatus();
       closeSocket();
