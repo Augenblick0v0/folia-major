@@ -16,6 +16,7 @@ import { hasRenderableLyrics } from '../../../../utils/appPlaybackHelpers';
 import {
     getOnlineProviderIdForSong,
     getPlaybackSongKey,
+    getPlaybackSourceRef,
     isLocalPlaybackSong,
     isNavidromePlaybackSong,
     isSamePlaybackSong,
@@ -33,6 +34,8 @@ import { onlineFailureOf, type OnlineFailure } from '../../../../services/online
 import { getCachedSongCoverUrl, getSongCacheWithLegacyMigration } from '../../../../services/onlineMusic/resourceCache';
 import { getSongCoverUrl } from '../../../../services/onlineMusic/songMetadata';
 import { useOnlineProviderAccountStore } from '../../../../stores/useOnlineProviderAccountStore';
+import { useAudioSettingsStore } from '../../../../stores/useAudioSettingsStore';
+import { buildClientTakeoverDeckSrc, isClientTakeoverSong } from '../../../../services/clientTakeover';
 import { setStatusMessage as setStatusMsg, useStatusMessageStore } from '../../../../stores/useStatusMessageStore';
 import { setActiveLocalLyricsSource, setAudioSrc, setCachedCoverUrl, setCurrentSong, usePlaybackStore } from '../../../../stores/usePlaybackStore';
 import { askedSongKeyRef, replaceShownSong } from '../currentSong';
@@ -304,16 +307,32 @@ export const restorePlaybackSourceForSong = async (
         });
     }
 
-    if (!omni.canPlaySong(song)) {
+    const playbackEngine = useAudioSettingsStore.getState().playbackEngine;
+    const isTakeoverRestore = playbackEngine !== undefined
+        && playbackEngine !== 'local'
+        && isClientTakeoverSong(song);
+    if (!isTakeoverRestore && !omni.canPlaySong(song)) {
         tellFailure(onlineFailureOf({ operation: 'audio', providerId: getOnlineProviderIdForSong(song) ?? undefined }, {}));
         return 'failed';
     }
 
     // Where the platform could not be reached the load asks again by itself while the restore is wanted,
     // unless the caller has a source to fall back on.
-    const audioResult = await loadOnlineSongAudio(song, audioQuality, null, hasFallbackSource
-        ? {}
-        : { retry: { isCurrent: () => !overtaken() } });
+    // A takeover song has no address of its own to restore: its deck source is the per-song silent
+    // data URI, and the client is asked to play it by the caller. The rest of the restore (lyrics,
+    // cover, queue) still runs, so the remembered screen comes back whole.
+    const audioResult = isTakeoverRestore
+        ? {
+            kind: 'ok' as const,
+            audioSrc: buildClientTakeoverDeckSrc(Number(getPlaybackSourceRef(song).mediaId)),
+            replayGain: song.replayGain,
+            blobUrl: undefined,
+            preview: undefined,
+            fetchedAt: null,
+        }
+        : await loadOnlineSongAudio(song, audioQuality, null, hasFallbackSource
+            ? {}
+            : { retry: { isCurrent: () => !overtaken() } });
     if (overtaken()) {
         // Never played: nothing holds this URL.
         if (audioResult.kind === 'ok' && audioResult.blobUrl) URL.revokeObjectURL(audioResult.blobUrl);

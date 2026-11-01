@@ -110,6 +110,8 @@ import { useNavidromeScrobbleReporter } from './hooks/useNavidromeScrobbleReport
 import { usePlaybackReporter } from './components/app/playback/bridges/usePlaybackReporter';
 import { useRecentPlaysRecorder } from './components/app/home/explore/useRecentPlaysRecorder';
 import { usePlaybackQueueController } from './components/app/playback/start/usePlaybackQueueController';
+import { useClientTakeoverBridge } from './components/app/playback/clientTakeover/useClientTakeoverBridge';
+import { useClientTakeoverReflection } from './components/app/playback/clientTakeover/useClientTakeoverReflection';
 import { usePlaybackTransportController } from './components/app/playback/bridges/usePlaybackTransportController';
 import { useLocalLibraryCatalog } from './hooks/useLocalLibraryCatalog';
 import { usePlaybackVisualizerBridge } from './components/app/playback/bridges/usePlaybackVisualizerBridge';
@@ -146,7 +148,9 @@ import { useAutomixSettingsStore } from './stores/useAutomixSettingsStore';
 import { selectDesktopSettingsSnapshot, useDesktopSettingsStore } from './stores/useDesktopSettingsStore';
 import { selectSleepTimerSnapshot, useSleepTimerStore } from './stores/useSleepTimerStore';
 import { selectStageSettingsSnapshot, useStageSettingsStore } from './stores/useStageSettingsStore';
-import { selectAudioSettingsSnapshot, useAudioSettingsStore } from './stores/useAudioSettingsStore';
+import { selectAudioSettingsSnapshot, useAudioSettingsStore, CLIENT_TAKEOVER_ENGINE } from './stores/useAudioSettingsStore';
+import { useClientTakeoverStore } from './stores/useClientTakeoverStore';
+import { isClientTakeoverSong } from './services/clientTakeover';
 import { useSettingsModalStore } from './stores/useSettingsModalStore';
 import { audioBands, audioPower, bass, currentTime, lowMid, lyricCurrentTime, mid, spectrum, treble, vocal } from './stores/motionSignals';
 import { useAppChromeStore } from './stores/useAppChromeStore';
@@ -418,6 +422,7 @@ export default function App() {
         loopMode,
         volume,
         isMuted,
+        playbackEngine,
         handleToggleLoopMode,
     } = useAudioSettingsStore(useShallow(selectAudioSettingsSnapshot));
     const {
@@ -557,10 +562,20 @@ export default function App() {
 
     const persistLastPlaybackCache = useCallback(persistPlaybackCache, []);
 
+    const seekCapability = useClientTakeoverStore(state => state.capabilities.seek);
+    const isClientTakeoverDeck = playbackEngine === CLIENT_TAKEOVER_ENGINE && isClientTakeoverSong(currentSong);
+    const seekEnabled = !isClientTakeoverDeck || seekCapability;
+    // Read by callbacks declared far above the deck hooks, and by the gain path below: a ref keeps
+    // them honest without making every one of them a dependency of a store subscription.
+    const isClientTakeoverDeckRef = useRef(isClientTakeoverDeck);
+    isClientTakeoverDeckRef.current = isClientTakeoverDeck;
+    const seekEnabledRef = useRef(seekEnabled);
+    seekEnabledRef.current = seekEnabled;
+
     const syncOutputGain = useCallback((targetVolume: number, smoothing = 0.015) => {
         const clampedVolume = clampMediaVolume(targetVolume);
 
-        if (gainNodeRef.current && audioContextRef.current) {
+        if (!isClientTakeoverDeckRef.current && gainNodeRef.current && audioContextRef.current) {
             // Volume only. ReplayGain lives on each deck now, because during a blend the two
             // tracks need their own compensation and this node is shared by both.
             if (smoothing <= 0) {
@@ -1025,6 +1040,9 @@ export default function App() {
         handleStageExternalPlayRequest,
         shuffleQueue,
         clearQueue,
+        enterClientTakeover,
+        leaveClientTakeover,
+        handleClientTakeoverTrack,
     } = usePlaybackQueueController({
         isNowPlayingStageActive,
         shouldNavigateToPlayerOnTrackChange: currentView !== 'lattice',
@@ -1131,7 +1149,7 @@ export default function App() {
         currentSongKeyRef: currentSongRef,
         coverUrl,
         loopMode: effectiveLoopMode,
-        isEnabled: automixEnabled && !isNowPlayingStageActive,
+        isEnabled: automixEnabled && !isNowPlayingStageActive && !isClientTakeoverDeck,
         transition: transitionSettings,
         onAdvanceTrack: () => {
             // Same advance the end of a track would trigger, only early enough for the outgoing
@@ -1150,6 +1168,28 @@ export default function App() {
     });
 
     automixRef.current = automix;
+
+    // The takeover bridge needs both real decks, not only the active one: the shim is attached to
+    // both and App still accepts events from the active deck alone.
+    const clientTakeoverDeckElementsRef = useRef<{ A: HTMLAudioElement | null; B: HTMLAudioElement | null }>({ A: null, B: null });
+    const registerClientTakeoverDeckA = useCallback((element: HTMLAudioElement | null) => {
+        automix.registerDeckA(element);
+        clientTakeoverDeckElementsRef.current.A = element;
+    }, [automix.registerDeckA]);
+    const registerClientTakeoverDeckB = useCallback((element: HTMLAudioElement | null) => {
+        automix.registerDeckB(element);
+        clientTakeoverDeckElementsRef.current.B = element;
+    }, [automix.registerDeckB]);
+
+    const handleClientCommandError = useCallback(() => {
+        setStatusMsg({ type: 'error', text: t('status.playbackError') });
+    }, [setStatusMsg, t]);
+    useClientTakeoverBridge({
+        deckElementsRef: clientTakeoverDeckElementsRef,
+        enterClientTakeover,
+        leaveClientTakeover,
+        onCommandError: handleClientCommandError,
+    });
 
     /**
      * The now-playing picture, which lags the app's own idea of what is playing.
@@ -1390,6 +1430,20 @@ export default function App() {
         audioRef,
         currentSong,
         activeDeck: automix.activeDeck,
+    });
+    const clientTakeoverArmed = useClientTakeoverStore(state => state.armed);
+    const reflectClientTakeoverTrack = useCallback((track: Parameters<typeof handleClientTakeoverTrack>[0]) => {
+        void handleClientTakeoverTrack(track);
+    }, [handleClientTakeoverTrack]);
+    const resendClientTakeoverCurrent = useCallback(() => {
+        const live = usePlaybackStore.getState();
+        if (!live.currentSong || !isClientTakeoverSong(live.currentSong)) return;
+        void playSong(live.currentSong, live.playQueue, live.isFmMode, { shouldNavigateToPlayer: false });
+    }, [playSong]);
+    useClientTakeoverReflection({
+        enabled: clientTakeoverArmed && playbackEngine === CLIENT_TAKEOVER_ENGINE,
+        onTrackChange: reflectClientTakeoverTrack,
+        onResendCurrent: resendClientTakeoverCurrent,
     });
     useRecentPlaysRecorder({
         audioRef,
@@ -2006,6 +2060,7 @@ export default function App() {
         return true;
     };
     const seekMainAudio = useCallback((time: number) => {
+        if (!seekEnabledRef.current) return;
         // A seek is a statement that playback should go on, same as it is on a paused track. If a
         // pause is still fading out, take it back (the audio never stopped) so the pending pause
         // cannot land after the seek.
@@ -2288,6 +2343,7 @@ export default function App() {
         navigateToPlayer,
         navigateFromPlayerCapsule,
         shouldHidePlayerProgressBar,
+        seekDisabled: !seekEnabled,
         onSeekMainAudio: seekMainAudio,
         onStagePlayerSeek: publishStagePlayerPlaybackUpdate,
         isNowPlayingStageActive,
@@ -2406,14 +2462,14 @@ export default function App() {
     // The two automix decks are identical and interchangeable. Every handler below ignores the
     // deck that is not currently active, so a track fading out in the background can never drive
     // the progress bar, the duration, the queue, or the player state.
-    const renderAudioDeck = (deck: AutomixDeckId, register: (element: HTMLAudioElement | null) => void) => (
+    const renderAudioDeck = (deck: AutomixDeckId) => (
         <audio
             key={deck}
-            ref={register}
+            ref={deck === 'A' ? registerClientTakeoverDeckA : registerClientTakeoverDeckB}
             src={automix.deckSrc(deck)}
             preload="auto"
             crossOrigin="anonymous"
-            loop={effectiveLoopMode === 'one' && automix.activeDeck === deck}
+            loop={effectiveLoopMode === 'one' && automix.activeDeck === deck && !isClientTakeoverDeck}
             onLoadStart={(e) => {
                 // Silent unless the invariant breaks. A deck is only ever handed the source the
                 // app is currently on, so the active deck loading anything else means the ref and
@@ -2524,7 +2580,7 @@ export default function App() {
                 // the length of the fade and could arm a blend the listener just stopped.
                 if (playbackFade.isFadingOut()) return;
                 if (!audioElement.ended) setPlayerState(PlayerState.PLAYING);
-                automix.checkTransitionPoint(audioElement.currentTime);
+                if (!isClientTakeoverDeck) automix.checkTransitionPoint(audioElement.currentTime);
             }}
             onSeeked={(e) => {
                 // Same split as onTimeUpdate: whichever deck the bar is showing is the one a seek
@@ -2562,6 +2618,18 @@ export default function App() {
                 // A track finishing in the background has already handed the queue over.
                 if (!automix.isActiveDeck(e.currentTarget)) {
                     automix.handleTailEnded();
+                    return;
+                }
+
+                // The client deck never fires a native ended: the shim synthesizes it after the
+                // client settles on `stopped` at the end of the track. Single loop is Folia's
+                // (the shim suppresses the client's own advance), so it re-asks for the same song.
+                if (isClientTakeoverDeck && currentSong) {
+                    if (effectiveLoopMode === 'one') {
+                        void playSong(currentSong, playQueue, isFmMode, { shouldNavigateToPlayer: false });
+                    } else {
+                        void handleNextTrack({ allowStopOnMissing: true, shouldNavigateToPlayer: false });
+                    }
                     return;
                 }
 
@@ -2698,8 +2766,8 @@ export default function App() {
                 }
             }}
             audioElement={<>
-                {renderAudioDeck('A', automix.registerDeckA)}
-                {renderAudioDeck('B', automix.registerDeckB)}
+                {renderAudioDeck('A')}
+                {renderAudioDeck('B')}
             </>}
         >
 
@@ -2778,6 +2846,7 @@ export default function App() {
                                 lyricCurrentTime={lyricCurrentTime}
                                 playbackDuration={displayDuration}
                                 canTogglePlayback={canToggleCurrentPlayback}
+                                seekDisabled={!seekEnabled}
                                 queue={playQueue}
                                 isDaylight={isDaylight}
                                 onBack={navigateBackFromLattice}

@@ -1,5 +1,24 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
+// Preload is sandboxed and may only require electron, so the client takeover channels are
+// inlined here instead of requiring the main-process channel constants.
+const CLIENT_CHANNELS = Object.freeze({
+  connect: 'netease-client:connect',
+  disconnect: 'netease-client:disconnect',
+  getStatus: 'netease-client:get-status',
+  getSnapshot: 'netease-client:get-snapshot',
+  playSong: 'netease-client:play-song',
+  play: 'netease-client:play',
+  pause: 'netease-client:pause',
+  toggle: 'netease-client:toggle',
+  next: 'netease-client:next',
+  prev: 'netease-client:prev',
+  seek: 'netease-client:seek',
+  setVolume: 'netease-client:set-volume',
+  status: 'netease-client:status',
+  snapshot: 'netease-client:snapshot',
+});
+
 contextBridge.exposeInMainWorld('electron', {
     webUtils: {
       // File.path was removed in modern Electron; this is the supported way to
@@ -170,6 +189,30 @@ contextBridge.exposeInMainWorld('electron', {
         const listener = (_event, status) => callback(status);
         ipcRenderer.on('netease-api-status-changed', listener);
         return () => ipcRenderer.removeListener('netease-api-status-changed', listener);
+    },
+    neteaseClient: {
+      connect: (options) => ipcRenderer.invoke(CLIENT_CHANNELS.connect, options),
+      disconnect: (options) => ipcRenderer.invoke(CLIENT_CHANNELS.disconnect, options),
+      getStatus: () => ipcRenderer.invoke(CLIENT_CHANNELS.getStatus),
+      getSnapshot: () => ipcRenderer.invoke(CLIENT_CHANNELS.getSnapshot),
+      playSong: (input) => ipcRenderer.invoke(CLIENT_CHANNELS.playSong, input),
+      play: () => ipcRenderer.invoke(CLIENT_CHANNELS.play),
+      pause: () => ipcRenderer.invoke(CLIENT_CHANNELS.pause),
+      toggle: () => ipcRenderer.invoke(CLIENT_CHANNELS.toggle),
+      next: () => ipcRenderer.invoke(CLIENT_CHANNELS.next),
+      prev: () => ipcRenderer.invoke(CLIENT_CHANNELS.prev),
+      seek: (positionSec) => ipcRenderer.invoke(CLIENT_CHANNELS.seek, { positionSec }),
+      setVolume: (volume) => ipcRenderer.invoke(CLIENT_CHANNELS.setVolume, { volume }),
+      onStatusChanged: (callback) => {
+        const listener = (_event, status) => callback(status);
+        ipcRenderer.on(CLIENT_CHANNELS.status, listener);
+        return () => ipcRenderer.removeListener(CLIENT_CHANNELS.status, listener);
+      },
+      onSnapshot: (callback) => {
+        const listener = (_event, snapshot) => callback(snapshot);
+        ipcRenderer.on(CLIENT_CHANNELS.snapshot, listener);
+        return () => ipcRenderer.removeListener(CLIENT_CHANNELS.snapshot, listener);
+      },
     },
     getKugouApiStatus: () => ipcRenderer.invoke('kugou-api-status'),
     kugouRequest: (operation, params) => ipcRenderer.invoke('kugou-api-request', operation, params),

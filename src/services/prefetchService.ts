@@ -26,6 +26,7 @@ import { modeNeedsBeatGrid } from './automix/transitionStrategy';
 import { useLyricSettingsStore } from '../stores/useLyricSettingsStore';
 import { useAutomixSettingsStore } from '../stores/useAutomixSettingsStore';
 import { useAudioSettingsStore } from '../stores/useAudioSettingsStore';
+import { isClientTakeoverSong } from './clientTakeover';
 import { onlineFailureOf } from './onlineMusic/failure/onlineFailureCase';
 import { noteOnlineRequestCooldown, onlineRequestCooldown } from './onlineMusic/failure/onlineRequestCooldown';
 import { usePlaybackStore } from '../stores/usePlaybackStore';
@@ -46,6 +47,12 @@ const PREFETCH_COUNT_PREV = 1;  // One behind, so "previous" is instant rather t
 const URL_TTL_MS = 1200 * 1000; // 1200 seconds = 20 minutes
 const MAX_PREFETCH_CACHE_SIZE = 200; // Evict least recently used entries beyond this limit
 
+/** The desktop client's engine, read defensively: hook tests may stub the settings store. */
+const isClientTakeoverEngine = (): boolean => {
+    const engine = useAudioSettingsStore.getState().playbackEngine;
+    return engine !== undefined && engine !== 'local';
+};
+
 /**
  * Hands a track to the automix analyser with whatever URL this file resolved for it.
  *
@@ -57,6 +64,13 @@ const analyseForAutomix = (song: SongResult, audioUrl: string | null | undefined
   const settingsAudioSettings = useAudioSettingsStore.getState();
   const settingsAutomixSettings = useAutomixSettingsStore.getState();
   const settingsLyricSettings = useLyricSettingsStore.getState();
+    // The desktop client owns the sound: there is no address Folia may fetch or decode, and no
+    // transition graph to build for a deck that only renders a silent data URI.
+    if (settingsAudioSettings.playbackEngine !== undefined
+        && settingsAudioSettings.playbackEngine !== 'local'
+        && isClientTakeoverSong(song)) {
+        return;
+    }
     // Nothing reads a profile while blending is switched off, and this is not a cheap thing to
     // produce for nobody: the whole file is read, decoded, and put through the beat model in the
     // inference process - per prefetched track, and a prefetch pass covers three of them. Blending
@@ -122,8 +136,7 @@ onPlaybackRepresentationRegistered(representation => {
     if (song) analyseForAutomix(song, libraryAudioUrl(song));
 });
 
-export interface PrefetchedSongData {
-    songKey: string;
+export interface PrefetchedSongData {    songKey: string;
     songId: MediaId;
     audioUrl: string | null;
     audioUrlFetchedAt: number;
@@ -223,6 +236,9 @@ export const resolvePrefetchAudioUrl = async (
 ): Promise<PrefetchedAudioUrl | null> => {
     const sourceRef = getPlaybackSourceRef(song);
     const providerId = sourceRef.kind === 'online' ? sourceRef.providerId : undefined;
+    if (isClientTakeoverEngine() && isClientTakeoverSong(song)) {
+        return null;
+    }
     try {
         // A copy fetched at another level than the one asked for does not count: playback will
         // pass it over, so the song gets a URL here like one with no copy.
@@ -263,6 +279,13 @@ const prefetchSong = async (
     userId?: MediaId | null
 ): Promise<void> => {
     if (signal.aborted) return;
+
+    // No audio URL, no IndexedDB read and no lyric prefetch for a track the desktop client owns:
+    // the client has the song, and Folia would only be warming a deck it does not use.
+    if (isClientTakeoverEngine() && isClientTakeoverSong(song)) {
+        console.log(`[Prefetch] Skipping client-takeover song: ${song.name}`);
+        return;
+    }
 
     const sourceRef = getPlaybackSourceRef(song);
     if (sourceRef.kind === 'local' || sourceRef.kind === 'navidrome') {

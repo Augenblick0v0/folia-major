@@ -37,6 +37,7 @@ export const SETTINGS_ANCHOR_DEFINITIONS = {
     // pages/PlaybackPage, pages/LyricsPage, and the listening report on pages/IntegrationPage
     queueSettings: { section: 'playback' },
     transitionSettings: { section: 'playback' },
+    playbackEngineSettings: { section: 'playback' },
     replayGainSettings: { section: 'playback' },
     audioOutputSettings: { section: 'playback' },
     lyrics: { section: 'lyrics' },

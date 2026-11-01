@@ -12,6 +12,7 @@ import { cachePlayedTrackAssets } from '../../../../services/playedTrackCache';
 import { registerPlaybackFadeGraph } from '../../../../services/playbackFade';
 import { rampGain, type AutomixDeckChain } from '../../../../services/automix/crossfadeGraph';
 import { setStatusMessage as setStatusMsg } from '../../../../stores/useStatusMessageStore';
+import { isClientTakeoverSong } from '../../../../services/clientTakeover';
 import { useAudioSettingsStore } from '../../../../stores/useAudioSettingsStore';
 import { setPlayerState } from '../../../../stores/usePlaybackStore';
 import { useTranslation } from 'react-i18next';
@@ -46,6 +47,11 @@ type UsePlaybackAudioBridgeParams = {
 
 /** How often a mod's equalizer change held back for a blend checks whether the blend has ended. */
 const DEFERRED_EQUALIZER_POLL_MS = 250;
+/** The per-song silent data URI the client takeover deck is given (see client/deckSrc.ts). */
+const CLIENT_TAKEOVER_DECK_SRC_PREFIX = 'data:audio/wav;base64,';
+const isClientTakeoverDeckSrc = (src: string | null | undefined): boolean => (
+    typeof src === 'string' && src.startsWith(CLIENT_TAKEOVER_DECK_SRC_PREFIX)
+);
 
 // Bridges audio element setup, autoplay, replay gain, and media caching.
 export function usePlaybackAudioBridge({
@@ -71,6 +77,8 @@ export function usePlaybackAudioBridge({
     const currentSong = usePlaybackStore(state => state.currentSong);
     const replayGainMode = usePlaybackStore(state => state.replayGainMode);
     const enableMediaCache = useAudioSettingsStore(state => state.enableMediaCache);
+    const playbackEngine = useAudioSettingsStore(state => state.playbackEngine);
+    const isClientTakeoverDeck = playbackEngine !== undefined && playbackEngine !== 'local' && isClientTakeoverSong(currentSong);
 
     const previousAudioSrcRef = useRef<string | null>(null);
     const replayGainLogSignatureRef = useRef<string | null>(null);
@@ -149,6 +157,9 @@ export function usePlaybackAudioBridge({
     }, [audioContextRef, currentSong, gainNodeRef, getActiveChain, localSongs, replayGainMode]);
 
     const setupAudioAnalyzer = useCallback(() => {
+        // The sound is produced by the desktop client, not by this element: a graph here would
+        // only analyse a silent data URI, and automix/EQ are bypassed for the remote deck.
+        if (isClientTakeoverDeck) return;
         // The context is the sentinel, not the source node: a deck that failed to connect must
         // not let this run twice, because createMediaElementSource throws on a second call.
         if (!audioRef.current || audioContextRef.current) return;
@@ -182,7 +193,7 @@ export function usePlaybackAudioBridge({
         } catch (error) {
             console.error('Audio Context Setup Failed:', error);
         }
-    }, [analyserRef, applyReplayGain, audioContextRef, audioRef, connectDecks, gainNodeRef, getTargetPlaybackVolume, heardEqualizerSettings, syncOutputGain]);
+    }, [analyserRef, applyReplayGain, audioContextRef, audioRef, connectDecks, gainNodeRef, getTargetPlaybackVolume, heardEqualizerSettings, isClientTakeoverDeck, syncOutputGain]);
 
     /**
      * Writes a fully-played track's audio and cover into the media cache.
@@ -204,7 +215,9 @@ export function usePlaybackAudioBridge({
     ) => {
         if (!enableMediaCache) return;
 
-        await cachePlayedTrackAssets(song, src, coverUrl);
+        // The takeover deck's source is a silent data URI, not the song's audio: passing it to the
+        // cache would store the silence. The cover still gets cached.
+        await cachePlayedTrackAssets(song, isClientTakeoverDeckSrc(src) ? null : src, coverUrl);
     }, [enableMediaCache]);
 
     const cacheSongAssets = useCallback(
@@ -267,6 +280,15 @@ export function usePlaybackAudioBridge({
     useEffect(() => {
         const audioElement = audioRef.current;
         if (!audioElement) {
+            previousAudioSrcRef.current = audioSrc;
+            return;
+        }
+
+        // The takeover deck only ever changes between per-song silent data URIs. Reloading one
+        // would pause the shim (and through it the client) for a track change the client is
+        // already playing; the previous remote source marks the transition away from that state
+        // too, so the fresh local address is left to React and the autoplay effect.
+        if (isClientTakeoverDeckSrc(audioSrc) || isClientTakeoverDeckSrc(previousAudioSrcRef.current)) {
             previousAudioSrcRef.current = audioSrc;
             return;
         }

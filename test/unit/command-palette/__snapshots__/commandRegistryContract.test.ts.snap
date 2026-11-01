@@ -105,6 +105,8 @@ exports[`command palette registry contract > keeps the registered command order 
   "settings-grid-action-button",
   "settings-playback",
   "settings-queue-behavior",
+  "settings-client-takeover",
+  "settings-toggle-client-takeover",
   "settings-netease-scrobble",
   "netease-scrobble-toggle",
   "settings-audio-output",

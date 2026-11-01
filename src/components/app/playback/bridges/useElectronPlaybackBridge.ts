@@ -22,7 +22,11 @@ import { getPlaybackSongKey, getPlaybackSourceRef } from '../../../../utils/appP
 import { omni } from '../../../../services/onlineMusic/omni';
 import { createRemoteTrackTransitionFeed, type RemoteTrackTransitionFeed } from './remoteTrackTransitionFeed';
 import { useStableActionSurface } from '../../../../hooks/useStableCallbacks';
-import { selectDisplayCoverUrl, selectDisplayDuration, selectDisplayLyrics, selectDisplayPlayerState, selectDisplaySong, usePlaybackStore } from '../../../../stores/usePlaybackStore';
+import { usePlaybackStore } from '../../../../stores/usePlaybackStore';
+import { selectDisplayCoverUrl, selectDisplayDuration, selectDisplayLyrics, selectDisplayPlayerState, selectDisplaySong } from '../../../../stores/usePlaybackStore';
+import { useAudioSettingsStore } from '../../../../stores/useAudioSettingsStore';
+import { useClientTakeoverStore } from '../../../../stores/useClientTakeoverStore';
+import { isClientTakeoverSong } from '../../../../services/clientTakeover';
 import { useAppChromeStore } from '../../../../stores/useAppChromeStore';
 import { useThemeSettingsStore } from '../../../../stores/useThemeSettingsStore';
 import { usePlayerChromeSettingsStore } from '../../../../stores/usePlayerChromeSettingsStore';
@@ -146,6 +150,10 @@ export const useElectronPlaybackBridge = ({
     const coverUrl = usePlaybackStore(selectDisplayCoverUrl);
     const duration = usePlaybackStore(selectDisplayDuration);
     const playerState = usePlaybackStore(selectDisplayPlayerState);
+    const playbackEngine = useAudioSettingsStore(state => state.playbackEngine);
+    const seekCapability = useClientTakeoverStore(state => state.capabilities.seek);
+    const isClientTakeoverDeck = playbackEngine !== undefined && playbackEngine !== 'local' && isClientTakeoverSong(currentSong);
+    const seekEnabled = !isClientTakeoverDeck || seekCapability;
     const remoteActions = useRemoteControlActions(isElectronWindow);
 
     const [playbackSyncBridgeStatus, setPlaybackSyncBridgeStatus] = useState<ElectronPlaybackSyncBridgeStatus>(() => emptyPlaybackSyncBridgeStatus());
@@ -621,6 +629,7 @@ export const useElectronPlaybackBridge = ({
             }
 
             if (command.type === 'seek') {
+                if (!seekEnabled) return;
                 const audioElement = audioRef.current;
                 if (!Number.isFinite(command.time)) {
                     return;
@@ -656,7 +665,7 @@ export const useElectronPlaybackBridge = ({
 
         return window.electron.onRemoteControlCommand(runCommand);
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [activePlaybackContext, audioRef, canLikeCurrentSong, currentTime, duration, isNowPlayingControlDisabledRef, mediaSessionNextRef, mediaSessionPauseRef, mediaSessionPlayRef, mediaSessionPrevRef, onRemoteCycleLoopMode, onRemoteExportCommand, onRemotePlayerChromeVisibilityModeCycle, onRemotePlayerChromeVisibilityModeSet, onRemoteTransitionSeek, setShowTransparentWindowBorder, syncStageLyricsClock, taskbarHasTrackRef, taskbarPlayerStateRef, onLike]);
+    }, [activePlaybackContext, audioRef, canLikeCurrentSong, currentTime, duration, isNowPlayingControlDisabledRef, mediaSessionNextRef, mediaSessionPauseRef, mediaSessionPlayRef, mediaSessionPrevRef, onRemoteCycleLoopMode, onRemoteExportCommand, onRemotePlayerChromeVisibilityModeCycle, onRemotePlayerChromeVisibilityModeSet, onRemoteTransitionSeek, seekEnabled, setShowTransparentWindowBorder, syncStageLyricsClock, taskbarHasTrackRef, taskbarPlayerStateRef, onLike]);
 
     useEffect(() => {
         if (!window.electron?.onStagePlayerControlRequest) {
@@ -700,6 +709,10 @@ export const useElectronPlaybackBridge = ({
                 }
 
                 if (request.action === 'seek') {
+                    if (!seekEnabled) {
+                        complete(request.requestId, false, new Error('Seeking is unavailable for the client takeover deck.'));
+                        return;
+                    }
                     const nextTime = Math.max(0, (request.positionMs ?? 0) / 1000);
                     // Same order as the remote's own seek above: mid-blend `audioRef` names the
                     // INCOMING deck, silent and holding a different track, so moving it moves
@@ -725,7 +738,7 @@ export const useElectronPlaybackBridge = ({
             }
         });
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [activePlaybackContext, audioRef, currentTime, duration, isNowPlayingControlDisabledRef, mediaSessionNextRef, mediaSessionPauseRef, mediaSessionPlayRef, mediaSessionPrevRef, onRemoteTransitionSeek, syncStageLyricsClock, taskbarHasTrackRef, taskbarPlayerStateRef]);
+    }, [activePlaybackContext, audioRef, currentTime, duration, isNowPlayingControlDisabledRef, mediaSessionNextRef, mediaSessionPauseRef, mediaSessionPlayRef, mediaSessionPrevRef, onRemoteTransitionSeek, seekEnabled, syncStageLyricsClock, taskbarHasTrackRef, taskbarPlayerStateRef]);
 
     useEffect(() => {
         if (!window.electron?.onStageExternalPlayRequest || !onExternalPlayRequest) {

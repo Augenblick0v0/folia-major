@@ -1,6 +1,8 @@
 import type { SongResult } from '../../types';
 import type { OmniPlaybackReport, OmniProviderId } from '../../types/onlineMusic';
 import { getPlaybackSourceRef } from '../../utils/appPlaybackGuards';
+import { useAudioSettingsStore } from '../../stores/useAudioSettingsStore';
+import { isClientTakeoverSong } from '../clientTakeover';
 import { useOnlineProviderAccountStore } from '../../stores/useOnlineProviderAccountStore';
 import { omni } from './omni';
 
@@ -29,6 +31,12 @@ export const MAX_REPORTS_PER_HOUR = 60;
 const REPORT_TIMEOUT_MS = 15_000;
 
 const HOUR_MS = 60 * 60 * 1000;
+
+/** The desktop client's engine, read defensively: callers may stub the settings store. */
+const isClientTakeoverEngine = (): boolean => {
+    const engine = useAudioSettingsStore.getState().playbackEngine;
+    return engine !== undefined && engine !== 'local';
+};
 
 // In memory only: restarting the app clears the hourly window. Persisting it would buy little,
 // since every report still needs 30 seconds of real audio behind it, but the ceiling is a guard
@@ -81,6 +89,13 @@ export const sendPlaybackReport = async (
     report: OmniPlaybackReport,
     nowMs = Date.now(),
 ): Promise<boolean> => {
+    // The last gate before a write to the listener's account. A takeover track is played by the
+    // desktop client, which makes the real listening record; a report from Folia would count it
+    // twice. Other providers still play through Folia while the engine is selected.
+    if (isClientTakeoverEngine() && isClientTakeoverSong(song)) {
+        console.warn('[Scrobble] dropped a listening report: the desktop client is playing this track');
+        return false;
+    }
     if (inFlight) {
         console.warn('[Scrobble] dropped a listening report: another one is still in flight');
         return false;

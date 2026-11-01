@@ -46,6 +46,8 @@ type LatticeProps = {
     lyricCurrentTime: MotionValue<number>;
     playbackDuration: number;
     canTogglePlayback: boolean;
+    /** The remote deck has no seek: the wall's progress bar is shown but not draggable. */
+    seekDisabled?: boolean;
     queue: SongResult[];
     isDaylight: boolean;
     onBack: () => void;
@@ -73,6 +75,7 @@ export default function Lattice({
     lyricCurrentTime,
     playbackDuration,
     canTogglePlayback,
+    seekDisabled = false,
     queue,
     isDaylight,
     onBack,
@@ -181,9 +184,9 @@ export default function Lattice({
 
     // Recomputed only when transport state actually moves, so the expanded chrome is the only
     // subscriber that re-renders on a pause, a resume or a duration update.
-    const transport = useMemo<LatticeTransport>(
-        () => ({ currentSong, playerState, currentTime, playbackDuration, canTogglePlayback }),
-        [canTogglePlayback, currentSong, currentTime, playbackDuration, playerState],
+    const transport = useMemo<LatticeTransport & { seekDisabled: boolean }>(
+        () => ({ currentSong, playerState, currentTime, playbackDuration, canTogglePlayback, seekDisabled }),
+        [canTogglePlayback, currentSong, currentTime, playbackDuration, playerState, seekDisabled],
     );
 
     return (

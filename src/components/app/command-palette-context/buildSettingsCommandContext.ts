@@ -197,6 +197,8 @@ export const buildSettingsCommandContext = (
         togglePlaybackReport: () => audio.handleToggleNeteaseScrobble(
             !useAudioSettingsStore.getState().neteaseScrobbleEnabled,
         ),
+        getPlaybackEngine: () => useAudioSettingsStore.getState().playbackEngine,
+        setPlaybackEngine: engine => useAudioSettingsStore.getState().setPlaybackEngine(engine),
         voiceInputPauseSupported: deps.voiceInputPauseSupported,
         modSystemEnabled: desktop.modSystemEnabled,
         toggleVoiceInputPause: () => desktop.handleToggleVoiceInputPause(

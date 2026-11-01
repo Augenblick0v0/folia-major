@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Dispatch, MutableRefObject, SetStateAction } from 'react';
 import type { MotionValue } from 'framer-motion';
 import { applyOnlineAudioSourceMetadata, loadOnlineSongLyrics } from '../../../../services/onlinePlayback';
+import { buildClientTakeoverDeckSrc, buildClientTakeoverQueueIds, buildClientTakeoverSong, clientTakeoverService, isClientTakeoverSong } from '../../../../services/clientTakeover';
+import type { ClientTakeoverTrack } from '../../../../services/clientTakeover';
 import { isSongUnavailable } from '../../../../services/onlineMusic/songAvailability';
 import { getSongResourceCacheKey } from '../../../../services/onlineMusic/resourceKeys';
 import { getPersonalFmSelection } from '../../../../stores/usePersonalFmModeStore';
@@ -20,6 +22,7 @@ import type { NavidromeSong } from '../../../../types/navidrome';
 import {
     getOnlineProviderIdForSong,
     getPlaybackSongKey,
+    getPlaybackSourceRef,
     isLocalPlaybackSong,
     isNavidromePlaybackSong,
     isSamePlaybackSong,
@@ -52,7 +55,7 @@ import { playbackFade } from '../../../../services/playbackFade';
 import { getProviderSongMetadata } from '../../../../services/onlineMusic/songMetadata';
 import { setStatusMessage as setStatusMsg } from '../../../../stores/useStatusMessageStore';
 import { setAudioSrc, setCachedCoverUrl, setCurrentLineIndex, setCurrentSong, setDuration, setIsFmMode, setPlayQueue, setPlayerState, startLoadingToPlay, usePlaybackStore } from '../../../../stores/usePlaybackStore';
-import { askedSongKeyRef, askForSong, playsDroppedSoFar, showSong, startOfAskedSong, startPlay, withdrawAsk } from '../currentSong';
+import { askedSongKeyRef, askForSong, makeSongCurrent, playsDroppedSoFar, showSong, startOfAskedSong, startPlay, withdrawAsk } from '../currentSong';
 import { loadOnlineSongAudio } from '../source/songAudioSource';
 import { onlineFailureToast } from '../source/onlineFailureToast';
 import { offersRetry, onlineFailureOf, stopsPlayback, type OnlineFailure } from '../../../../services/onlineMusic/failure/onlineFailureCase';
@@ -269,6 +272,7 @@ export function usePlaybackQueueController({
     // i18n, and App.tsx was naming 15 of them purely to hand them straight back.
     const { t } = useTranslation();
     const audioQuality = useAudioSettingsStore(state => state.audioQuality);
+    const playbackEngine = useAudioSettingsStore(state => state.playbackEngine);
     const loopMode = useAudioSettingsStore(state => state.loopMode);
     const activePlaybackContext = usePlaybackStore(state => state.activePlaybackContext);
     const currentSong = usePlaybackStore(state => state.currentSong);
@@ -488,6 +492,10 @@ export function usePlaybackQueueController({
         const playSongCallId = ++playSongCallIdRef.current;
         // A route that empties the player while this play waits drops it too (`dropPlaysInFlight`).
         const droppedAtStart = playsDroppedSoFar();
+        // The engine decides which deck this play writes. Read it before the first wait and compare
+        // it again after every wait: an engine switch during the wait must not land the old branch.
+        const engineAtPlayStart = useAudioSettingsStore.getState().playbackEngine;
+        const engineIsStillCurrent = () => useAudioSettingsStore.getState().playbackEngine === engineAtPlayStart;
         // No queue given, or the store's own (next / previous, a mod's playQueueItem, the FM top-up): the
         // buttons of a failure play from the queue as it is when they are pressed. Only a queue not yet in
         // the store (a playlist's song) is kept as it was given. The queue panel hands a copy with the local
@@ -511,7 +519,7 @@ export function usePlaybackQueueController({
         const allowedSong = !options.isAutomixAdvance && hasBeforePlayHook()
             ? await runBeforePlayHook(requestedSong)
             : requestedSong;
-        if (!allowedSong || playSongCallIdRef.current !== playSongCallId || playsDroppedSoFar() !== droppedAtStart) {
+        if (!allowedSong || playSongCallIdRef.current !== playSongCallId || playsDroppedSoFar() !== droppedAtStart || !engineIsStillCurrent()) {
             return;
         }
         const song = allowedSong;
@@ -580,6 +588,17 @@ export function usePlaybackQueueController({
         };
         const queueContext = queue.length > 0 ? queue : playQueue.length === 0 ? [song] : playQueue;
         const newQueue = getPlayableOnlineQueue(queueContext);
+        const isClientTakeoverPlay = engineAtPlayStart !== undefined
+            && engineAtPlayStart !== 'local'
+            && isClientTakeoverSong(song);
+        const clientTakeoverTrackId = isClientTakeoverPlay
+            ? Number(getPlaybackSourceRef(song).mediaId)
+            : null;
+        if (engineAtPlayStart !== undefined && engineAtPlayStart !== 'local' && !isClientTakeoverPlay) {
+            // A local, Navidrome or non-takeover online song takes the engine back for itself: the
+            // client must not keep sounding underneath it.
+            void clientTakeoverService.pause();
+        }
         const skipCount = options.unavailableSkipCount ?? 0;
         playbackAutoSkipCountRef.current = skipCount;
         // For the plays this one defers (the replacement dialog, the timed skip): they start after a
@@ -709,7 +728,7 @@ export function usePlaybackQueueController({
             presentOnlineFailure(lookupFailure && isPassingFailure(lookupFailure) ? lookupFailure : shown);
         };
 
-        if (!isLocal && !isNavidrome && isSongUnavailable(song)) {
+        if (!isLocal && !isNavidrome && !isClientTakeoverPlay && isSongUnavailable(song)) {
             await presentTakenDown(onlineFailureOf({ operation: 'audio', providerId }, { detail: { case: 'taken-down' } }));
             return;
         }
@@ -768,65 +787,120 @@ export function usePlaybackQueueController({
             return;
         }
 
-        prefetched = getPrefetchedData(song, audioQuality);
+        if (isClientTakeoverPlay && clientTakeoverTrackId !== null) {
+            // Every playSong starts the song it names at its beginning, including a same-song replay
+            // from next/previous. Carrying Folia's near-end position into a list-loop of a one-song
+            // queue made the client report `stopped`, which advanced the queue into the same song
+            // again, forever. Resuming where the client already was belongs to enterClientTakeover.
+            // Stop a locally sounding deck; the reload effect deliberately passes over the
+            // data-URI source. A deck already playing the client is left to the new command.
+            const previousSong = usePlaybackStore.getState().currentSong;
+            if (!previousSong || !isClientTakeoverSong(previousSong)) audioRef.current?.pause();
+            startLoadingToPlay();
+            const takeoverResult = await clientTakeoverService.playSong({
+                songId: clientTakeoverTrackId,
+                queueIds: buildClientTakeoverQueueIds(newQueue, clientTakeoverTrackId),
+                startPositionSec: 0,
+            });
+            if (!isLatestPlaybackRequest() || !engineIsStillCurrent()) {
+                clientTakeoverService.consumeExpectedTrack(clientTakeoverTrackId);
+                return;
+            }
+            if (!takeoverResult.ok) {
+                // The expected-track mark was set before the command; clear it so a later
+                // client-side change to this id is not mistaken for Folia's own echo.
+                clientTakeoverService.consumeExpectedTrack(clientTakeoverTrackId);
+                setStatusMsg({ type: 'error', text: t('status.playbackError') });
+                setPlayerState(PlayerState.IDLE);
+                return;
+            }
+            makeSongCurrent(song);
+            setPlayerState(PlayerState.PLAYING);
+            shouldAutoPlayRef.current = false;
+            pendingResumeTimeRef.current = null;
+            lastAudioRecoverySourceRef.current = null;
+            currentOnlineAudioUrlFetchedAtRef.current = null;
+            setLyrics(null);
+            setCurrentLineIndex(-1);
+            currentTime.set(0);
+            setDuration(0);
+            setAudioSrc(null);
+            setAudioSrc(buildClientTakeoverDeckSrc(clientTakeoverTrackId));
+            preloadedOnlineAudioResult = {
+                kind: 'ok',
+                audioSrc: buildClientTakeoverDeckSrc(clientTakeoverTrackId),
+                replayGain: song.replayGain,
+                fetchedAt: null,
+            };
+        } else {
+            prefetched = getPrefetchedData(song, audioQuality);
 
-        const hasImmediatePrefetchedAudio = Boolean(
-            prefetched?.audioUrl &&
-            prefetched.audioUrl !== 'CACHED_IN_DB'
-        );
-        const hasCachedAudioBlob = hasImmediatePrefetchedAudio
-            ? null
-            : await hasCachedSongAudio(song);
+            const hasImmediatePrefetchedAudio = Boolean(
+                prefetched?.audioUrl &&
+                prefetched.audioUrl !== 'CACHED_IN_DB'
+            );
+            const hasCachedAudioBlob = hasImmediatePrefetchedAudio
+                ? null
+                : await hasCachedSongAudio(song);
 
-        if (!isLatestPlaybackRequest()) return;
+            if (!isLatestPlaybackRequest()) return;
 
-        if (!hasImmediatePrefetchedAudio && !hasCachedAudioBlob) {
-            setStatusMsg({ type: 'info', text: t('status.loadingSong') });
+            if (!hasImmediatePrefetchedAudio && !hasCachedAudioBlob) {
+                setStatusMsg({ type: 'info', text: t('status.loadingSong') });
+            }
+
+            if (!engineIsStillCurrent()) return;
+
+            try {
+                // Where the platform could not be reached the load asks again by itself while this play is
+                // wanted, and says so.
+                preloadedOnlineAudioResult = await loadOnlineSongAudio(song, audioQuality, prefetched, {
+                    retry: {
+                        isCurrent: isLatestPlaybackRequest,
+                        onRetrying: shown => {
+                            if (isLatestPlaybackRequest()) {
+                                setStatusMsg({ type: 'info', text: t('status.songRetrying'), ...(shown.providerId ? { providerId: shown.providerId } : {}) });
+                            }
+                        },
+                    },
+                });
+                if (!isLatestPlaybackRequest() || !engineIsStillCurrent()) {
+                    giveBackUnusedCopy();
+                    return;
+                }
+
+                if (preloadedOnlineAudioResult.kind === 'unavailable') {
+                    const shown = preloadedOnlineAudioResult.failure;
+                    if (shown.case === 'taken-down') await presentTakenDown(shown);
+                    else presentOnlineFailure(shown);
+                    return;
+                }
+            } catch (error) {
+                if (!isLatestPlaybackRequest() || !engineIsStillCurrent()) return;
+                console.error('[App] Failed to fetch song URL:', error);
+                presentOnlineFailure(onlineFailureOf({ operation: 'audio', providerId }, { error }));
+                return;
+            }
         }
 
-        try {
-            // Where the platform could not be reached the load asks again by itself while this play is
-            // wanted, and says so.
-            preloadedOnlineAudioResult = await loadOnlineSongAudio(song, audioQuality, prefetched, {
-                retry: {
-                    isCurrent: isLatestPlaybackRequest,
-                    onRetrying: shown => {
-                        if (isLatestPlaybackRequest()) {
-                            setStatusMsg({ type: 'info', text: t('status.songRetrying'), ...(shown.providerId ? { providerId: shown.providerId } : {}) });
-                        }
-                    },
-                },
-            });
-            if (!isLatestPlaybackRequest()) {
-                giveBackUnusedCopy();
-                return;
-            }
-
-            if (preloadedOnlineAudioResult.kind === 'unavailable') {
-                const shown = preloadedOnlineAudioResult.failure;
-                if (shown.case === 'taken-down') await presentTakenDown(shown);
-                else presentOnlineFailure(shown);
-                return;
-            }
-        } catch (error) {
-            if (!isLatestPlaybackRequest()) return;
-            console.error('[App] Failed to fetch song URL:', error);
-            presentOnlineFailure(onlineFailureOf({ operation: 'audio', providerId }, { error }));
+        if (!engineIsStillCurrent()) {
+            giveBackUnusedCopy();
             return;
         }
-
         const songKey = getPlaybackSongKey(song);
         const resolvedSong = preloadedOnlineAudioResult?.kind === 'ok'
             ? applyOnlineAudioSourceMetadata(song, preloadedOnlineAudioResult.replayGain)
             : song;
         const resolvedQueue = replacePlaybackSongInQueue(newQueue, resolvedSong);
-        askForSong(song);
+        if (!isClientTakeoverPlay) {
+            askForSong(song);
+        }
         // Which start of the song this is: a newer play of this same song asks again under the same key.
         const askedStart = startOfAskedSong();
 
         const onlineLyricsState = await loadOnlineLyricsState(song);
         // Overtaken during that wait: nothing of this song is shown, and the queue stays as it is.
-        if (!isLatestPlaybackRequest()) {
+        if (!isLatestPlaybackRequest() || !engineIsStillCurrent()) {
             // The play that overtook this one may end without asking for a song of its own.
             withdrawAsk(song);
             giveBackUnusedCopy();
@@ -840,7 +914,7 @@ export function usePlaybackQueueController({
 
         // Written only now: a play that gave up above leaves the intent to play, the time to resume
         // at and the address's fetch time to the song the key went back to.
-        shouldAutoPlayRef.current = true;
+        shouldAutoPlayRef.current = !isClientTakeoverPlay;
         pendingResumeTimeRef.current = null;
         lastAudioRecoverySourceRef.current = null;
         currentOnlineAudioUrlFetchedAtRef.current = null;
@@ -848,7 +922,15 @@ export function usePlaybackQueueController({
         setCurrentLineIndex(-1);
         currentTime.set(0);
         setDuration(0);
-        showSong({ ...resolvedSong, onlineLyricsState: onlineLyricsState ?? undefined });
+        if (isClientTakeoverPlay) {
+            // `makeSongCurrent` already showed the song above; only the stored lyric state came later.
+            setCurrentSong(prev => {
+                if (!prev || !isSamePlaybackSong(prev, song)) return prev;
+                return { ...prev, onlineLyricsState: onlineLyricsState ?? undefined };
+            });
+        } else {
+            showSong({ ...resolvedSong, onlineLyricsState: onlineLyricsState ?? undefined });
+        }
         setCachedCoverUrl(null);
         setAudioSrc(null);
         setIsLyricsLoading(true);
@@ -878,10 +960,12 @@ export function usePlaybackQueueController({
         if (shouldNavigateToPlayer) {
             navigateToPlaybackView();
         }
-        startLoadingToPlay();
+        if (!isClientTakeoverPlay) {
+            startLoadingToPlay();
+        }
 
         const cachedCoverUrl = await getCachedSongCoverUrl(song);
-        if (askedSongKeyRef.current !== songKey || startOfAskedSong() !== askedStart) {
+        if (askedSongKeyRef.current !== songKey || startOfAskedSong() !== askedStart || !engineIsStillCurrent()) {
             giveBackUnusedCopy();
             return;
         }
@@ -975,6 +1059,7 @@ export function usePlaybackQueueController({
         onPlayNavidromeSong,
         pendingResumeTimeRef,
         persistLastPlaybackCache,
+        playbackEngine,
         playQueue,
         playbackAutoSkipCountRef,
         restoreCachedThemeForSong,
@@ -996,6 +1081,163 @@ export function usePlaybackQueueController({
         t,
         userId,
     ]);
+
+    /**
+     * Hands the song Folia is already on to the desktop client: the client is asked to play it at
+     * Folia's position, and stays paused when Folia itself is paused.
+     */
+    const enterClientTakeover = useCallback(async () => {
+        const live = usePlaybackStore.getState();
+        const song = live.currentSong;
+        if (!song || !isClientTakeoverSong(song)) return;
+        const trackId = Number(getPlaybackSourceRef(song).mediaId);
+        const at = currentTime.get();
+        const wasPlaying = usePlaybackStore.getState().playerState === PlayerState.PLAYING;
+        const engineAtStart = useAudioSettingsStore.getState().playbackEngine;
+        audioRef.current?.pause();
+        setAudioSrc(null);
+        setAudioSrc(buildClientTakeoverDeckSrc(trackId));
+        startLoadingToPlay();
+        const result = await clientTakeoverService.playSong({
+            songId: trackId,
+            queueIds: buildClientTakeoverQueueIds(live.playQueue, trackId),
+            startPositionSec: at,
+        });
+        if (useAudioSettingsStore.getState().playbackEngine !== engineAtStart) {
+            clientTakeoverService.consumeExpectedTrack(trackId);
+            return;
+        }
+        const current = usePlaybackStore.getState().currentSong;
+        if (!current || !isSamePlaybackSong(current, song)) {
+            clientTakeoverService.consumeExpectedTrack(trackId);
+            return;
+        }
+        if (!result.ok) {
+            clientTakeoverService.consumeExpectedTrack(trackId);
+            setStatusMsg({ type: 'error', text: t('status.playbackError') });
+            setPlayerState(PlayerState.IDLE);
+            return;
+        }
+        if (!wasPlaying) {
+            await clientTakeoverService.pause();
+            setPlayerState(PlayerState.PAUSED);
+        } else {
+            setPlayerState(PlayerState.PLAYING);
+        }
+    }, [audioRef, currentTime, setAudioSrc, setPlayerState, setStatusMsg, t]);
+
+    /**
+     * Takes playback back when the engine becomes local again. It asks for the song's own address
+     * rather than going through playSong: queue, lyrics and cover are already on screen and a
+     * second play would rebuild them and zero the position.
+     */
+    const leaveClientTakeover = useCallback(async () => {
+        const live = usePlaybackStore.getState();
+        const song = live.currentSong;
+        const at = currentTime.get();
+        const wasPlaying = live.playerState === PlayerState.PLAYING;
+        if (!song || !isClientTakeoverSong(song)) return;
+        const songKey = getPlaybackSongKey(song);
+        const askedStart = startOfAskedSong();
+        const engineAtStart = useAudioSettingsStore.getState().playbackEngine;
+        audioRef.current?.pause();
+        const discard = (result: { kind: 'ok'; blobUrl?: string } | { kind: 'unavailable' }) => {
+            if (result.kind === 'ok' && result.blobUrl) URL.revokeObjectURL(result.blobUrl);
+        };
+        try {
+            const result = await loadOnlineSongAudio(song, audioQuality, null);
+            // The address may arrive after a new song was chosen, or after the listener switched
+            // back to the client. The result belongs to the play this call started for; anything
+            // newer owns the deck now, and writing this one would undo it.
+            const current = usePlaybackStore.getState().currentSong;
+            if (useAudioSettingsStore.getState().playbackEngine !== engineAtStart
+                || askedSongKeyRef.current !== songKey
+                || startOfAskedSong() !== askedStart
+                || !current
+                || !isSamePlaybackSong(current, song)) {
+                discard(result);
+                return;
+            }
+            if (result.kind !== 'ok') {
+                setStatusMsg({ type: 'error', text: t('status.playbackError') });
+                setPlayerState(PlayerState.PAUSED);
+                return;
+            }
+            setAudioSrc(result.audioSrc);
+            currentOnlineAudioUrlFetchedAtRef.current = result.fetchedAt;
+            lastAudioRecoverySourceRef.current = null;
+            pendingResumeTimeRef.current = at;
+            shouldAutoPlayRef.current = wasPlaying;
+            setPlayerState(wasPlaying ? PlayerState.PLAYING : PlayerState.PAUSED);
+        } catch (error) {
+            if (useAudioSettingsStore.getState().playbackEngine !== engineAtStart
+                || askedSongKeyRef.current !== songKey
+                || startOfAskedSong() !== askedStart) {
+                return;
+            }
+            console.warn('[ClientTakeover] Failed to restore the song address', error);
+            setStatusMsg({ type: 'error', text: t('status.playbackError') });
+            setPlayerState(PlayerState.PAUSED);
+        }
+    }, [
+        audioQuality,
+        audioRef,
+        currentOnlineAudioUrlFetchedAtRef,
+        currentTime,
+        lastAudioRecoverySourceRef,
+        pendingResumeTimeRef,
+        setAudioSrc,
+        setPlayerState,
+        setStatusMsg,
+        shouldAutoPlayRef,
+        t,
+    ]);
+
+    /**
+     * A track change made in the client, reflected into Folia's song, queue position, lyrics and
+     * cover. The queue is not rewritten: it stays Folia's, and the changed track is looked up in it.
+     */
+    const handleClientTakeoverTrack = useCallback(async (track: ClientTakeoverTrack) => {
+        const queue = usePlaybackStore.getState().playQueue;
+        const queuedSong = queue.find(candidate => (
+            isClientTakeoverSong(candidate)
+            && Number(getPlaybackSourceRef(candidate).mediaId) === track.id
+        ));
+        // The client may move to a catalogue track Folia's queue does not hold. That is still the
+        // sound the listener hears: show it and load its lyrics instead of leaving the previous
+        // song on screen while a local deck could keep sounding underneath.
+        const song = queuedSong ?? buildClientTakeoverSong(track);
+        if (!queuedSong) {
+            console.warn('[ClientTakeover] client moved to a track outside the Folia queue; showing it from the client snapshot', track.id);
+        }
+
+        const previousSong = usePlaybackStore.getState().currentSong;
+        makeSongCurrent(song);
+        // The remote source is a data URI, so the audio bridge's reload effect passes it over.
+        // Stop a locally sounding deck; never pause the client after its own track change.
+        if (!previousSong || !isClientTakeoverSong(previousSong)) audioRef.current?.pause();
+        setLyrics(null);
+        setCurrentLineIndex(-1);
+        currentTime.set(0);
+        if (track.durationMs > 0) setDuration(track.durationMs / 1000);
+        setAudioSrc(buildClientTakeoverDeckSrc(track.id));
+        setCachedCoverUrl(getProviderSongMetadata(song).coverUrl ?? null);
+        setIsLyricsLoading(true);
+
+        const songKey = getPlaybackSongKey(song);
+        try {
+            const cachedCoverUrl = await getCachedSongCoverUrl(song);
+            if (askedSongKeyRef.current !== songKey) return;
+            setCachedCoverUrl(cachedCoverUrl ?? getProviderSongMetadata(song).coverUrl ?? null);
+            const processed = await omni.getLyrics(song, { userId });
+            if (askedSongKeyRef.current !== songKey) return;
+            setLyrics(processed.lyrics);
+        } catch (error) {
+            console.warn('[ClientTakeover] Failed to load the reflected track lyrics', error);
+        } finally {
+            if (askedSongKeyRef.current === songKey) setIsLyricsLoading(false);
+        }
+    }, [audioRef, currentTime, setAudioSrc, setCachedCoverUrl, setCurrentLineIndex, setDuration, setIsLyricsLoading, setLyrics, userId]);
 
     const playOnlineQueueFromStart = useCallback((songs: SongResult[]) => {
         const retainedSongs = getPlayableOnlineQueue(songs);
@@ -1687,5 +1929,8 @@ export function usePlaybackQueueController({
         handleStageExternalPlayRequest,
         shuffleQueue,
         clearQueue,
+        enterClientTakeover,
+        leaveClientTakeover,
+        handleClientTakeoverTrack,
     });
 }

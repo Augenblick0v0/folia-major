@@ -6,8 +6,10 @@ import { modelsPresent, subscribeModelAvailability } from '../../../../services/
 import { transitionCapabilities } from '../../../../services/automix/stems';
 import { announceTransition, type TransitionRenderer } from '../../../../services/automix/transitionCue';
 import { canAnalyseTracks } from '../../../../services/automix/transitionStrategy';
-import { useAudioSettingsStore } from '../../../../stores/useAudioSettingsStore';
+import { clientTakeoverService, isClientTakeoverAvailable } from '../../../../services/clientTakeover';
+import { CLIENT_TAKEOVER_ENGINE, useAudioSettingsStore } from '../../../../stores/useAudioSettingsStore';
 import { useAutomixSettingsStore } from '../../../../stores/useAutomixSettingsStore';
+import { useClientTakeoverStore } from '../../../../stores/useClientTakeoverStore';
 import { useDesktopSettingsStore } from '../../../../stores/useDesktopSettingsStore';
 import { runsOnWindows } from '../../../../utils/platform';
 import { Button, Chips, Group, Reveal, Row, Segmented, Slider, Status, Toggle, option, type SettingsGroupDef, type SettingsOptionDef } from '../kit';
@@ -20,6 +22,7 @@ import { useSettingsPage } from './settingsPageContext';
 // analysis models the full transition engine needs.
 
 const TRANSITION: SettingsGroupDef = { id: 'transitionSettings', titleKey: 'options.transitionSettings' };
+const ENGINE: SettingsGroupDef = { id: 'playbackEngineSettings', titleKey: 'options.settingsHeadingPlaybackEngine', electronOnly: true, available: () => isClientTakeoverAvailable() };
 const SOUND: SettingsGroupDef = { id: 'audioOutputSettings', titleKey: 'options.settingsHeadingSound' };
 const BEHAVIOR: SettingsGroupDef = { id: 'queueSettings', titleKey: 'options.settingsHeadingPlaybackBehavior' };
 
@@ -31,6 +34,7 @@ const O = {
     animation: option(TRANSITION, 'transitionAnimation', 'options.transitionAnimation'),
     animationRing: option(TRANSITION, 'transitionAnimationRing', 'options.transitionAnimationRing'),
     animationCard: option(TRANSITION, 'transitionAnimationCard', 'options.transitionAnimationCard'),
+    engine: option(ENGINE, 'playbackEngine', 'options.playbackEngine', { electronOnly: true }),
     outputDevice: option(SOUND, 'audioOutputDevice', 'options.audioOutputDevice'),
     replayGain: option(SOUND, 'replayGainSettings', 'options.replayGainMode'),
     fade: option(SOUND, 'playbackFade', 'options.playbackFade'),
@@ -76,11 +80,18 @@ const PlaybackPage: React.FC = () => {
         transcode: state.enableTranscodeFallback,
         queueBehavior: state.queueAddBehavior,
         autoSkipUnplayable: state.autoSkipUnplayable,
+        playbackEngine: state.playbackEngine,
         setMediaCache: state.handleToggleMediaCache,
         setFade: state.handleTogglePlaybackFade,
         setTranscode: state.handleToggleTranscodeFallback,
         setQueueBehavior: state.handleSetQueueAddBehavior,
         setAutoSkipUnplayable: state.handleToggleAutoSkipUnplayable,
+        setPlaybackEngine: state.setPlaybackEngine,
+    })));
+    const takeover = useClientTakeoverStore(useShallow(state => ({
+        status: state.status,
+        clientVersion: state.clientVersion,
+        error: state.error,
     })));
     const preventSleep = useDesktopSettingsStore(state => state.preventDisplaySleepDuringPlayback);
     const setPreventSleep = useDesktopSettingsStore(state => state.handleTogglePreventDisplaySleepDuringPlayback);
@@ -97,6 +108,44 @@ const PlaybackPage: React.FC = () => {
         : !analysable || capabilities.full
             ? t('options.transitionAutomixDesc')
             : t(capabilities.desktop ? 'options.transitionEngineNeedsModels' : 'options.transitionEngineLiteDesc');
+
+    // The takeover's own state, in one line: the client may be off, starting, connected, or have
+    // refused the connection with a reason worth showing.
+    const takeoverTone: 'ok' | 'warn' | 'error' | undefined = takeover.status === 'connected'
+        ? 'ok'
+        : takeover.status === 'error'
+            ? 'error'
+            : takeover.status === 'connecting' || takeover.status === 'reconnecting'
+                ? 'warn'
+                : undefined;
+    const takeoverLabel = takeover.status === 'connected'
+        ? (takeover.clientVersion
+            ? t('options.clientTakeoverConnectedVersion', { version: takeover.clientVersion })
+            : t('options.clientTakeoverConnected'))
+        : takeover.status === 'error'
+            ? t('options.clientTakeoverError', { message: takeover.error?.message ?? '' })
+            : takeover.status === 'connecting' || takeover.status === 'reconnecting'
+                ? t('options.clientTakeoverConnecting')
+                : t('options.clientTakeoverDisconnected');
+    const takeoverConnected = takeover.status === 'connected';
+    const takeoverBusy = takeover.status === 'connecting' || takeover.status === 'reconnecting';
+    const takeoverEnabled = audio.playbackEngine === CLIENT_TAKEOVER_ENGINE;
+
+    // The settings page can outlive the App hook that normally mirrors the service, and opening it
+    // after a reconnect should show the current state at once. Applying twice is harmless: the
+    // store drops an older revision and a repeated status is the same status.
+    React.useEffect(() => {
+        if (!isElectron || !isClientTakeoverAvailable()) return;
+        const store = useClientTakeoverStore.getState();
+        const stopStatus = clientTakeoverService.subscribeStatus(store.applyStatus);
+        const stopSnapshot = clientTakeoverService.subscribe(store.applySnapshot);
+        void clientTakeoverService.getStatus();
+        void clientTakeoverService.getSnapshot();
+        return () => {
+            stopStatus();
+            stopSnapshot();
+        };
+    }, [isElectron]);
 
     // Switching a drawing on plays it once at once; otherwise it would wait for the next long blend.
     const animationChip = (def: SettingsOptionDef, renderer: TransitionRenderer, checked: boolean, set: (enabled: boolean) => void) => ({
@@ -187,6 +236,43 @@ const PlaybackPage: React.FC = () => {
                     </Reveal>
                 </Reveal>
             </Group>
+
+            {isElectron && isClientTakeoverAvailable() && (
+                <Group def={ENGINE}>
+                    <Row option={O.engine} hint={t('options.playbackEngineDesc')}>
+                        <Segmented
+                            value={audio.playbackEngine}
+                            options={[
+                                { value: 'local', label: t('options.playbackEngineLocal') },
+                                { value: CLIENT_TAKEOVER_ENGINE, label: t('options.playbackEngineClientTakeover') },
+                            ]}
+                            onChange={audio.setPlaybackEngine}
+                        />
+                    </Row>
+                    <Row
+                        sub
+                        label={t('options.clientTakeoverConnection')}
+                        hint={takeoverEnabled ? t('options.clientTakeoverDesc') : t('options.clientTakeoverRequiresEngine')}
+                    >
+                        <div className="flex flex-wrap items-center justify-end gap-2">
+                            <Status tone={takeoverTone}>{takeoverLabel}</Status>
+                            <Button
+                                variant={takeoverConnected ? 'quiet' : 'primary'}
+                                disabled={!takeoverEnabled || takeoverBusy}
+                                onClick={() => {
+                                    if (takeoverConnected) {
+                                        void clientTakeoverService.disconnect({ pauseFirst: true });
+                                    } else {
+                                        void clientTakeoverService.connect({ force: true });
+                                    }
+                                }}
+                            >
+                                {takeoverConnected ? t('options.clientTakeoverDisconnect') : t('options.clientTakeoverConnect')}
+                            </Button>
+                        </div>
+                    </Row>
+                </Group>
+            )}
 
             <Group def={SOUND}>
                 <AudioOutputDeviceRow option={O.outputDevice} onDeviceChange={onAudioOutputDeviceChange} />

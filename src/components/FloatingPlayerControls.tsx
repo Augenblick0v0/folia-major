@@ -80,6 +80,8 @@ interface FloatingPlayerControlsProps {
     isHidden?: boolean;
     hideControlBar?: boolean;
     controlsDisabled?: boolean;
+    /** Seeking is unavailable for this deck (the client takeover without its seek capability). */
+    seekDisabled?: boolean;
     trackNavigation?: TrackNavigation | null;
     /** 右侧两个可自定义槽位的动作 id。 */
     slotPrimary: PlayerControlSlotActionId;
@@ -115,6 +117,7 @@ const FloatingPlayerControls: React.FC<FloatingPlayerControlsProps> = ({
     isHidden = false,
     hideControlBar = false,
     controlsDisabled = false,
+    seekDisabled = false,
     trackNavigation = null,
     slotPrimary,
     slotSecondary,
@@ -405,6 +408,7 @@ const FloatingPlayerControls: React.FC<FloatingPlayerControlsProps> = ({
                                     trackColor={trackColor}
                                     isDaylight={isDaylight}
                                     controlsDisabled={controlsDisabled || isPositioning}
+                                    seekDisabled={seekDisabled}
                                     trackNavigation={trackNavigation}
                                     slotPrimary={slotPrimary}
                                     slotSecondary={slotSecondary}
@@ -419,6 +423,7 @@ const FloatingPlayerControls: React.FC<FloatingPlayerControlsProps> = ({
                                     secondaryColor={secondaryColor}
                                     trackColor={trackColor}
                                     controlsDisabled={controlsDisabled}
+                                    seekDisabled={seekDisabled}
                                 />
                             )}
                         </motion.div>
@@ -481,6 +486,7 @@ interface ExpandedViewProps {
     trackColor?: string;
     isDaylight?: boolean;
     controlsDisabled?: boolean;
+    seekDisabled?: boolean;
     trackNavigation?: TrackNavigation | null;
     slotPrimary: PlayerControlSlotActionId;
     slotSecondary: PlayerControlSlotActionId;
@@ -502,6 +508,7 @@ const ExpandedView: React.FC<ExpandedViewProps> = ({
     trackColor,
     isDaylight,
     controlsDisabled = false,
+    seekDisabled = false,
     trackNavigation = null,
     slotPrimary,
     slotSecondary,
@@ -586,7 +593,7 @@ const ExpandedView: React.FC<ExpandedViewProps> = ({
                     primaryColor={primaryColor}
                     secondaryColor={secondaryColor}
                     trackColor={trackColor}
-                    disabled={controlsDisabled}
+                    disabled={controlsDisabled || seekDisabled}
                 />
             </div>
         </div>
@@ -602,6 +609,7 @@ interface CollapsedViewProps {
     secondaryColor: string;
     trackColor?: string;
     controlsDisabled?: boolean;
+    seekDisabled?: boolean;
 }
 
 const CollapsedView: React.FC<CollapsedViewProps> = ({
@@ -612,6 +620,7 @@ const CollapsedView: React.FC<CollapsedViewProps> = ({
     secondaryColor,
     trackColor,
     controlsDisabled = false,
+    seekDisabled = false,
 }) => {
     return (
         <div className="flex items-center w-full justify-center h-8 px-4">
@@ -622,7 +631,7 @@ const CollapsedView: React.FC<CollapsedViewProps> = ({
                 primaryColor={primaryColor}
                 secondaryColor={secondaryColor}
                 trackColor={trackColor}
-                disabled={controlsDisabled}
+                disabled={controlsDisabled || seekDisabled}
                 collapsed
             />
         </div>

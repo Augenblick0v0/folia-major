@@ -5,6 +5,8 @@ import { setStatusMessage as setStatusMsg } from '../../../../stores/useStatusMe
 import { setPlayerState } from '../../../../stores/usePlaybackStore';
 import { useTranslation } from 'react-i18next';
 import { usePlaybackStore } from '../../../../stores/usePlaybackStore';
+import { useAudioSettingsStore } from '../../../../stores/useAudioSettingsStore';
+import { isClientTakeoverSong } from '../../../../services/clientTakeover';
 import { currentTime } from '../../../../stores/motionSignals';
 import { markProgrammaticPause, playbackFade, type PlaybackFadeSettleReason } from '../../../../services/playbackFade';
 import { getPlaybackSongKey } from '../../../../utils/appPlaybackGuards';
@@ -68,6 +70,9 @@ export function usePlaybackTransportController({
     const activePlaybackContext = usePlaybackStore(state => state.activePlaybackContext);
     const audioSrc = usePlaybackStore(state => state.audioSrc);
     const duration = usePlaybackStore(state => state.duration);
+    const currentSong = usePlaybackStore(state => state.currentSong);
+    const playbackEngine = useAudioSettingsStore(state => state.playbackEngine);
+    const isClientTakeoverDeck = playbackEngine !== undefined && playbackEngine !== 'local' && isClientTakeoverSong(currentSong);
     const transportRevision = useRef(0);
     const wantsPlayback = useRef(false);
     useEffect(() => () => {
@@ -208,6 +213,16 @@ export function usePlaybackTransportController({
             return;
         }
 
+        // The remote deck has no fade graph: its pause goes straight to the client through the
+        // shim, which pauses the real element as well. A fade here would sit on silence and delay
+        // the client command for no audible reason.
+        if (isClientTakeoverDeck) {
+            audioRef.current?.pause();
+            syncOutputGain(getTargetPlaybackVolume(), 0);
+            setPlayerState(PlayerState.PAUSED);
+            return;
+        }
+
         const readCurrentSongKey = () => {
             const song = usePlaybackStore.getState().currentSong;
             return song ? getPlaybackSongKey(song) : null;
@@ -267,7 +282,7 @@ export function usePlaybackTransportController({
         if (settlePause()) {
             setPlayerState(PlayerState.PAUSED);
         }
-    }, [activePlaybackContext, audioRef, audioSrc, currentTime, duration, getSyntheticStageLyricsTime, getTargetPlaybackVolume, isNowPlayingStageActive, isTransitionAudible, pauseDuringTransition, setPlayerState, stageActiveEntryKind, stageLyricsClockRef, syncOutputGain, syncStageLyricsClock]);
+    }, [activePlaybackContext, audioRef, audioSrc, currentTime, duration, getSyntheticStageLyricsTime, getTargetPlaybackVolume, isClientTakeoverDeck, isNowPlayingStageActive, isTransitionAudible, pauseDuringTransition, setPlayerState, stageActiveEntryKind, stageLyricsClockRef, syncOutputGain, syncStageLyricsClock]);
 
     return {
         resumePlayback,

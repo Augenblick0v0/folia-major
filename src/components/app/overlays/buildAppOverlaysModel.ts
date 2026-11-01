@@ -101,6 +101,8 @@ export type AppOverlaysDeps = {
     navigateToPlayer: () => void;
     navigateFromPlayerCapsule: () => void;
     shouldHidePlayerProgressBar: boolean;
+    /** The remote deck has no seek: the floating progress bar is shown but not draggable. */
+    seekDisabled: boolean;
     onSeekMainAudio: (time: number) => void;
     onStagePlayerSeek: () => Promise<unknown>;
     isNowPlayingStageActive: boolean;
@@ -161,6 +163,7 @@ export const buildAppOverlaysModel = ({
     navigateFromPlayerCapsule,
     isPlayerChromeHidden,
     shouldHidePlayerProgressBar,
+    seekDisabled,
     onSeekMainAudio,
     onStagePlayerSeek,
     noTrackText,
@@ -292,6 +295,7 @@ export const buildAppOverlaysModel = ({
             isDaylight,
             isHidden: currentView === 'player' && isPlayerChromeHidden,
             hideControlBar: shouldHidePlayerProgressBar,
+            seekDisabled,
             slotPrimary: playerControlSlotPrimary,
             slotSecondary: playerControlSlotSecondary,
             slotContext: playerControlSlotContext,

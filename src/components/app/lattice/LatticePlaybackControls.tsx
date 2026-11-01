@@ -5,6 +5,7 @@ import ProgressBar from '../../ProgressBar';
 import { PlayerState } from '../../../types';
 import { getPlaybackSongKey } from '../../../utils/appPlaybackGuards';
 import { useLatticeTransport } from './LatticeTransportContext';
+import type { LatticeTransport } from './LatticeTransportContext';
 import type { LatticeSongTile } from './latticeModel';
 import LatticeChromeTime from './LatticeChromeTime';
 import LatticeExtraControls from './LatticeExtraControls';
@@ -34,7 +35,8 @@ export default function LatticePlaybackControls({
 }: LatticePlaybackControlsProps) {
     const { t } = useTranslation();
     // Subscribed here rather than threaded through every poster: only this card reads transport state.
-    const { currentSong, playerState, currentTime, playbackDuration, canTogglePlayback } = useLatticeTransport();
+    // `seekDisabled` rides along in the same context value; the provider passes the object through.
+    const { currentSong, playerState, currentTime, playbackDuration, canTogglePlayback, seekDisabled } = useLatticeTransport() as LatticeTransport & { seekDisabled?: boolean };
     const isCurrentSong = Boolean(
         currentSong && getPlaybackSongKey(currentSong) === getPlaybackSongKey(tile.song),
     );
@@ -79,7 +81,7 @@ export default function LatticePlaybackControls({
                     primaryColor="var(--lattice-chrome-ink)"
                     secondaryColor="var(--lattice-chrome-ink)"
                     trackColor="color-mix(in srgb, var(--lattice-chrome-ink) 20%, transparent)"
-                    disabled={!canControlCurrent}
+                    disabled={!canControlCurrent || Boolean(seekDisabled)}
                     edgeStyle="square"
                 />
             </div>

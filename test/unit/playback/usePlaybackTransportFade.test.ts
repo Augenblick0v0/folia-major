@@ -34,6 +34,15 @@ vi.mock('@/stores/usePlaybackStore', () => ({
     setPlayerState: storeMock.setPlayerState,
 }));
 vi.mock('@/stores/useStatusMessageStore', () => ({ setStatusMessage: vi.fn() }));
+const audioSettingsMock = vi.hoisted(() => ({
+    state: { playbackEngine: 'local', playbackFadeEnabled: true },
+}));
+vi.mock('@/stores/useAudioSettingsStore', () => ({
+    useAudioSettingsStore: Object.assign(
+        (selector: (state: typeof audioSettingsMock.state) => unknown) => selector(audioSettingsMock.state),
+        { getState: () => audioSettingsMock.state },
+    ),
+}));
 vi.mock('@/stores/motionSignals', () => ({ currentTime: { set: vi.fn(), get: () => 0 } }));
 
 const { usePlaybackTransportController } = await import('@/components/app/playback/bridges/usePlaybackTransportController');

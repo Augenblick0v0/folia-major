@@ -329,6 +329,12 @@ export default async function viteConfig(_config: ConfigEnv): Promise<UserConfig
     resolve: {
       alias: {
         '@': path.resolve(__dirname, './src'),
+        // @acemir/cssom@0.9.32's build/CSSOM.js is a broken UMD shell (never assigns
+        // module.exports, so the `parse` named import fails at build time). Force every
+        // resolution of that package onto the working CommonJS entry lib/index.js,
+        // which exports parse/clone and interops cleanly under rollup. pnpm nests it
+        // under linkedom's private store, so resolve through that real path.
+        '@acemir/cssom': path.resolve(__dirname, './node_modules/.pnpm/linkedom@0.18.14/node_modules/@acemir/cssom/lib/index.js'),
       }
     }
   };

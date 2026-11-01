@@ -12,6 +12,8 @@ import {
     replacePlaybackSongWhereQueued,
 } from '../../../../utils/appPlaybackGuards';
 import { setAudioSrc, setCurrentSong, setPlayQueue, usePlaybackStore } from '../../../../stores/usePlaybackStore';
+import { useAudioSettingsStore } from '../../../../stores/useAudioSettingsStore';
+import { isClientTakeoverSong } from '../../../../services/clientTakeover';
 import { askedSongKeyRef, startOfAskedSong } from '../currentSong';
 import { loadOnlineSongAudio } from '../source/songAudioSource';
 import { onlineFailureOf, type OnlineFailure } from '../../../../services/onlineMusic/failure/onlineFailureCase';
@@ -80,6 +82,12 @@ export const getOnlineRecoveryKey = (src: string | null | undefined): string | n
     }
 };
 
+// The desktop client's engine, read defensively: hook tests may stub the settings store.
+const isClientTakeoverEngine = (): boolean => {
+    const engine = useAudioSettingsStore.getState().playbackEngine;
+    return engine !== undefined && engine !== 'local';
+};
+
 // Creates online-stream refresh and recovery helpers without tying them to a React hook.
 export const createOnlineRecoveryController = ({
     audioQuality,
@@ -98,6 +106,11 @@ export const createOnlineRecoveryController = ({
 }: RecoveryControllerParams) => {
     const shouldRefreshCurrentOnlineAudioSource = () => {
         if (!currentSong || isLocalPlaybackSong(currentSong) || isNavidromePlaybackSong(currentSong) || isStagePlaybackSong(currentSong)) {
+            return false;
+        }
+
+        // A takeover song has no Folia address to refresh; the client owns its stream.
+        if (isClientTakeoverEngine() && isClientTakeoverSong(currentSong)) {
             return false;
         }
 
@@ -127,6 +140,12 @@ export const createOnlineRecoveryController = ({
         const audioElement = audioRef.current;
 
         if (!song || !audioElement || isLocalPlaybackSong(song) || isNavidromePlaybackSong(song) || isStagePlaybackSong(song)) {
+            return { recovered: false };
+        }
+
+        // The remote deck never produces a media error of its own (the shim suppresses them); a
+        // recovery that ran here would ask for an address Folia must not fetch in this engine.
+        if (isClientTakeoverEngine() && isClientTakeoverSong(song)) {
             return { recovered: false };
         }
 

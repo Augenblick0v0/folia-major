@@ -22,6 +22,8 @@ import {
 } from '../utils/audioEqualizerModCurve';
 import { getStoredBoolean, getStoredString, removeStoredKey, setStoredBoolean, setStoredString } from './storagePrimitives';
 import { setStatusMessage } from './useStatusMessageStore';
+import { isClientTakeoverAvailable } from '../services/clientTakeover';
+import { dropPlaysInFlight } from '../components/app/playback/currentSong';
 import i18n from '../i18n/config';
 
 export const CACHE_SIZE_KEY = 'folia_cache_size';
@@ -40,6 +42,13 @@ export const ENABLE_TRANSCODE_FALLBACK_KEY = 'folia_enable_transcode_fallback';
 
 /** Whether finished plays of online NetEase tracks are reported to the signed-in account. */
 export const NETEASE_SCROBBLE_KEY = 'folia_netease_scrobble';
+
+/** Which engine plays the sound: Folia's own audio, or the desktop client Folia controls. */
+export const PLAYBACK_ENGINE_KEY = 'folia_playback_engine';
+
+export const CLIENT_TAKEOVER_ENGINE = 'neteaseClient' as const;
+
+export type PlaybackEngine = 'local' | typeof CLIENT_TAKEOVER_ENGINE;
 
 /** Whether pause fades out and resume fades in (services/playbackFade). On unless switched off. */
 export const PLAYBACK_FADE_KEY = 'folia_playback_fade_enabled';
@@ -142,6 +151,19 @@ const readStoredLoopMode = (): 'off' | 'all' | 'one' => {
 };
 
 /**
+ * The engine kept from the last run. The takeover engine exists only in the desktop app: the web
+ * build (and a desktop build whose preload lacks the bridge) always starts local, so a stored
+ * value can never leave playback pointing at a client that cannot be there.
+ */
+const readStoredPlaybackEngine = (): PlaybackEngine => {
+    if (typeof window === 'undefined' || !isClientTakeoverAvailable()) {
+        return 'local';
+    }
+
+    return localStorage.getItem(PLAYBACK_ENGINE_KEY) === CLIENT_TAKEOVER_ENGINE ? CLIENT_TAKEOVER_ENGINE : 'local';
+};
+
+/**
  * The mod curve kept from the last run, checked against the listener's own sound: one saved by a later
  * version is left in place unused (going back to that version finds it again), a broken one is removed, and
  * so is one whose base the listener's sound no longer matches (it was changed where nothing ended the curve,
@@ -205,6 +227,8 @@ export type AudioSettingsState = {
     enableTranscodeFallback: boolean;
     /** Report finished plays of online NetEase tracks to the signed-in account. Off by default. */
     neteaseScrobbleEnabled: boolean;
+    /** Which engine plays: Folia's own audio, or the desktop client it controls. Desktop-only. */
+    playbackEngine: PlaybackEngine;
     /** Short fade when pausing and resuming instead of cutting the sound. On by default. */
     playbackFadeEnabled: boolean;
     /** Count down to a skip when a song is restricted or fails for an unknown reason. Off by default. */
@@ -226,6 +250,7 @@ export type AudioSettingsState = {
     isMuted: boolean;
     loopMode: 'off' | 'all' | 'one';
     setAudioQuality: (quality: AudioQuality) => void;
+    setPlaybackEngine: (engine: PlaybackEngine) => void;
     handleToggleMediaCache: (enable: boolean) => void;
     handleSetMediaCacheLimitGb: (gigabytes: number) => void;
     handleSetQueueAddBehavior: (behavior: QueueAddBehavior) => void;
@@ -319,6 +344,7 @@ export const useAudioSettingsStore = create<AudioSettingsState>((set, get) => ({
     ),
     // Off unless asked for: it writes to the listener's music account, so it is never a default.
     neteaseScrobbleEnabled: getStoredBoolean(NETEASE_SCROBBLE_KEY, false),
+    playbackEngine: readStoredPlaybackEngine(),
     playbackFadeEnabled: getStoredBoolean(PLAYBACK_FADE_KEY, true),
     // Off unless asked for: skipping a song the listener picked is not something to do by default.
     autoSkipUnplayable: getStoredBoolean(AUTO_SKIP_UNPLAYABLE_KEY, false),
@@ -336,6 +362,21 @@ export const useAudioSettingsStore = create<AudioSettingsState>((set, get) => ({
             localStorage.setItem('default_audio_quality', quality);
         }
         set({ audioQuality: quality });
+    },
+    setPlaybackEngine: (engine) => {
+        if (engine === CLIENT_TAKEOVER_ENGINE && !isClientTakeoverAvailable()) {
+            return;
+        }
+        if (engine === get().playbackEngine) {
+            return;
+        }
+        if (typeof window !== 'undefined') {
+            localStorage.setItem(PLAYBACK_ENGINE_KEY, engine);
+        }
+        // A play that has not shown its song chose its output deck from the old engine. End it at
+        // the switch, so its late result cannot write into the new engine's deck.
+        dropPlaysInFlight();
+        set({ playbackEngine: engine });
     },
     handleToggleMediaCache: (enable) => {
         setStoredBoolean(ENABLE_MEDIA_CACHE_KEY, enable);
@@ -515,6 +556,7 @@ export const selectAudioSettingsSnapshot = (state: AudioSettingsState) => ({
     autoPlayOnLaunch: state.autoPlayOnLaunch,
     enableTranscodeFallback: state.enableTranscodeFallback,
     neteaseScrobbleEnabled: state.neteaseScrobbleEnabled,
+    playbackEngine: state.playbackEngine,
     playbackFadeEnabled: state.playbackFadeEnabled,
     autoSkipUnplayable: state.autoSkipUnplayable,
     audioOutputDeviceId: state.audioOutputDeviceId,
@@ -524,6 +566,7 @@ export const selectAudioSettingsSnapshot = (state: AudioSettingsState) => ({
     isMuted: state.isMuted,
     loopMode: state.loopMode,
     setAudioQuality: state.setAudioQuality,
+    setPlaybackEngine: state.setPlaybackEngine,
     handleToggleMediaCache: state.handleToggleMediaCache,
     handleSetMediaCacheLimitGb: state.handleSetMediaCacheLimitGb,
     handleSetQueueAddBehavior: state.handleSetQueueAddBehavior,

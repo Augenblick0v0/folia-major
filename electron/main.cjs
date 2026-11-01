@@ -4701,6 +4701,8 @@ const { createNetworkRecorder } = require('./networkRecorder.cjs');
 const { createNeteaseBackend } = require('./netease/neteaseBackend.cjs');
 const { createQqBackend } = require('./qq/qqBackend.cjs');
 const { registerLoginBackendIpc } = require('./loginBackendIpc.cjs');
+const { createNeteaseClientController: createClientController } = require('./netease/clientControl.cjs');
+const { registerNeteaseClientIpc: registerClientIpc } = require('./netease/clientIpc.cjs');
 
 // 主线程里内嵌后端的出站连接记录：要在它们发出请求之前开始订阅。工作线程里发出的请求另有一份记录（见 networkRecorder.cjs）。
 const networkRecorder = createNetworkRecorder();
@@ -4743,6 +4745,12 @@ const qqBackend = createQqBackend({
   networkRecorder,
   getStateFilePath: () => path.join(app.getPath('userData'), 'qq-auth-state', 'qq-device.json'),
   authSessionRepository: qqAuthSessionRepository,
+});
+
+// The client controller never opens a socket until the renderer asks for it.
+const clientController = createClientController({
+  broadcast: broadcastToWindows,
+  logger: console,
 });
 
 function isElectronDevRuntime() {
@@ -5897,6 +5905,7 @@ app.whenReady().then(async () => {
   // the window from appearing at all on a slow or blocked route. Status reaches the renderer over
   // netease-api-status-changed, and get-netease-port reports null until the server is listening.
   void neteaseBackend.start();
+  void clientController.start();
   await qqBackend.start();
   try {
     await stageApi.startStageServerIfNeeded();
@@ -6789,6 +6798,12 @@ registerLoginBackendIpc({
   getDefaultSession: () => session.defaultSession,
   neteaseBackend,
   qqBackend,
+});
+
+registerClientIpc({
+  ipcMain,
+  controller: clientController,
+  isTrusted: isTrustedMainWindowContents,
 });
 
 // Both channels reach the embedded KuGou API. `kugou-api-request` forwards the renderer's operation

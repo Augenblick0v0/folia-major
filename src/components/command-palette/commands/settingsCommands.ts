@@ -4,6 +4,7 @@ import { buildObsCustomCss } from '../../../services/obs/obsCustomCss';
 import { hasUploadedObsAsset } from '../../../services/obs/visualSettingsConfig';
 import type { CommandPaletteCommand } from '../types';
 import type { GpuPreference } from '../../../stores/useDesktopSettingsStore';
+import { CLIENT_TAKEOVER_ENGINE } from '../../../stores/useAudioSettingsStore';
 import { createToggleCommand, createAppLanguageCommand, createSettingsCommand, createSettingsAnchorCommand, defineCommand } from '../commandFactories';
 import { sleepTimerCommand } from './sleepTimerCommand';
 import { lyricExportCommands } from './lyricExportCommands';
@@ -140,6 +141,21 @@ export const settingsCommands: CommandPaletteCommand[] = [
     createSettingsAnchorCommand('settings-grid-action-button', 'Grid action button', 'Jump to what the grid action button slides to', ['grid button', 'action button', '海报墙按钮'], 'gridActionButton'),
     createSettingsCommand('settings-playback', 'Playback settings', 'Open playback behavior settings', ['playback', '播放', '播放设置'], 'options', 'playback'),
     createSettingsAnchorCommand('settings-queue-behavior', 'Queue behavior', 'Jump to how the play queue is built and kept', ['queue settings', 'queue behaviour', '队列行为'], 'queueSettings'),
+    createSettingsAnchorCommand('settings-client-takeover', 'Client takeover', 'Jump to the desktop client playback engine', ['desktop client', 'playback engine', '客户端接管', '播放引擎'], 'playbackEngineSettings', { platform: ['electron'] }),
+    {
+        id: 'settings-toggle-client-takeover',
+        platform: ['electron'],
+        group: 'settings',
+        title: 'Client takeover',
+        description: 'Switch between Folia playback and the desktop client',
+        keywords: ['desktop client', 'playback engine', '客户端接管', '播放引擎'],
+        execute: (_input, context) => {
+            context.settings.setPlaybackEngine(
+                context.settings.getPlaybackEngine() === 'local' ? CLIENT_TAKEOVER_ENGINE : 'local',
+            );
+            return true;
+        },
+    },
     createSettingsAnchorCommand('settings-netease-scrobble', 'NetEase listening report', 'Jump to whether finished plays are reported to NetEase Cloud Music', ['scrobble', 'netease scrobble', 'listening report', 'play count', '听歌打卡', '打卡', '听歌排行'], 'scrobbleSettings'),
     createToggleCommand(
         'netease-scrobble-toggle',

@@ -15,6 +15,8 @@ import { selectDisplayDuration, usePlaybackStore } from '../../../../stores/useP
 import { setIsPanelOpen, useAppViewStore } from '../../../../stores/useAppViewStore';
 import { setIsDevDebugOverlayVisible, setIsMemoryMonitorVisible } from '../../../../stores/useAppChromeStore';
 import { useAudioSettingsStore } from '../../../../stores/useAudioSettingsStore';
+import { useClientTakeoverStore } from '../../../../stores/useClientTakeoverStore';
+import { isClientTakeoverSong } from '../../../../services/clientTakeover';
 import { currentTime } from '../../../../stores/motionSignals';
 import { errorFields } from '../../../../utils/errorText';
 
@@ -107,6 +109,10 @@ export function usePlaybackInteractionBridge({
     // track's, so clamping an arrow-key seek against it would land past the end of the one heard.
     const duration = usePlaybackStore(selectDisplayDuration);
     const handleToggleLoopMode = useAudioSettingsStore(state => state.handleToggleLoopMode);
+    const playbackEngine = useAudioSettingsStore(state => state.playbackEngine);
+    const seekCapability = useClientTakeoverStore(state => state.capabilities.seek);
+    const isClientTakeoverDeck = playbackEngine !== undefined && playbackEngine !== 'local' && isClientTakeoverSong(currentSong);
+    const seekEnabled = !isClientTakeoverDeck || seekCapability;
 
     // resumePlayback rethrows after showing the error toast so awaiting callers can react, but
     // togglePlay is fire-and-forget: without this the rejection escapes as an unhandled promise
@@ -298,6 +304,7 @@ export function usePlaybackInteractionBridge({
                     } else {
                         // Off the motion value, not the element: during a blend that value is driven
                         // by the deck on screen, which is the track this key is meant to move.
+                        if (!seekEnabled) break;
                         const nextTime = Math.max(0, currentTime.get() - 5);
                         if (!seekDuringTransition?.(nextTime) && audioRef.current) {
                             audioRef.current.currentTime = nextTime;
@@ -334,6 +341,7 @@ export function usePlaybackInteractionBridge({
                         // `duration` rather than the element's own, for the same reason: mid-blend
                         // the element holds the ARRIVING track's length, and clamping this track's
                         // position against it lands past its end.
+                        if (!seekEnabled) break;
                         const nextTime = Math.min(duration || 0, currentTime.get() + 5);
                         if (!seekDuringTransition?.(nextTime) && audioRef.current) {
                             audioRef.current.currentTime = nextTime;
@@ -373,6 +381,7 @@ export function usePlaybackInteractionBridge({
         pausePlayback,
         playerState,
         resumePlayback,
+        seekEnabled,
         setIsDevDebugOverlayVisible,
         setIsMemoryMonitorVisible,
         setIsPanelOpen,

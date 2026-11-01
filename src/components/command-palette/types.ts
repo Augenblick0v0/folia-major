@@ -24,6 +24,7 @@ import type { CommandPlatform } from './availability';
 import type { CommandPaletteSurface } from './surfaces/types';
 import type { CommandSyntaxSpec } from './syntax/types';
 import type { PlaybackEntryView } from '../../stores/usePlaybackEntryViewStore';
+import type { PlaybackEngine } from '../../stores/useAudioSettingsStore';
 import type { GpuPreference } from '../../stores/useDesktopSettingsStore';
 import type { PonderHintVisibility } from '../../types/ponder';
 import type { LibraryWallLook } from '../../utils/libraryWallLook';
@@ -340,6 +341,9 @@ export type CommandPaletteSettingsContext = {
      */
     canReportPlayback: () => boolean;
     togglePlaybackReport: () => void;
+    /** Which engine plays the sound; read live so the toggle command matches the settings row. */
+    getPlaybackEngine: () => PlaybackEngine;
+    setPlaybackEngine: (engine: PlaybackEngine) => void;
     voiceInputPauseSupported: boolean;
     /** Lab switch for the experimental mod system; gates the `mods` command. */
     modSystemEnabled: boolean;

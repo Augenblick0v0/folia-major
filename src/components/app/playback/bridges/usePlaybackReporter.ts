@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import type { RefObject } from 'react';
 import type { SongResult } from '../../../../types';
+import { isClientTakeoverSong } from '../../../../services/clientTakeover';
 import { useAudioSettingsStore } from '../../../../stores/useAudioSettingsStore';
 import { getPlaybackSongKey, getPlaybackSourceRef } from '../../../../utils/appPlaybackGuards';
 import { getProviderSongMetadata } from '../../../../services/onlineMusic/songMetadata';
@@ -46,6 +47,12 @@ export const usePlaybackReporter = ({
     activeDeck,
 }: UsePlaybackReporterParams): void => {
     const enabled = useAudioSettingsStore(state => state.neteaseScrobbleEnabled);
+    const playbackEngine = useAudioSettingsStore(state => state.playbackEngine);
+    // The settings store mocks in this repo's hook tests predate the engine field; an absent value
+    // must read as "local", never as "takeover".
+    const isClientTakeoverDeck = playbackEngine !== undefined
+        && playbackEngine !== 'local'
+        && isClientTakeoverSong(currentSong);
     const trackerRef = useRef<PlaybackListenTracker | null>(null);
     const sessionSongRef = useRef<SongResult | null>(null);
 
@@ -85,7 +92,9 @@ export const usePlaybackReporter = ({
 
         // Switching the feature off must not bank the play that was in progress: the listener asked
         // for nothing to be reported, and a settle here would report one last time.
-        if (!enabled) {
+        // The same goes for the desktop-client engine: the client makes the real listening record,
+        // so any report from Folia would count the same play a second time.
+        if (!enabled || isClientTakeoverDeck) {
             tracker.clear();
             sessionSongRef.current = null;
             return;
@@ -130,5 +139,5 @@ export const usePlaybackReporter = ({
         // these listeners are bound to the element itself. That swap happens at ARM time, before the
         // outgoing track really ends, so its last few seconds go uncounted - an under-report of the
         // blend's length, which is the safe direction for a feature that writes to a real account.
-    }, [audioRef, activeDeck, currentSong, enabled]);
+    }, [audioRef, activeDeck, currentSong, enabled, isClientTakeoverDeck]);
 };

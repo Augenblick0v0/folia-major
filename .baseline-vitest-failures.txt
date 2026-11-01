@@ -1,0 +1,12 @@
+test/unit/electron/lazyJsdom.test.ts
+test/unit/lyrics/architecture.test.ts
+test/unit/mod-system/foliumHelpers.test.ts
+test/unit/mod-system/foliumIcons.test.ts
+test/unit/mod-system/modDigest.test.ts
+test/unit/onlineMusic/omniArchitecture.test.ts
+test/unit/onlineMusic/qqSessionRefresh.test.ts
+test/unit/ponder/ponderSurfacePins.test.ts
+test/unit/settings/libraryWallLookSettings.test.ts
+test/unit/sync/themeSyncRegistry.test.ts
+test/unit/visualizer/fumeLineFit.test.ts
+test/unit/visualizer/pixiFilterPoolCompat.test.ts
