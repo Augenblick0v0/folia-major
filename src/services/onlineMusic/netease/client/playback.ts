@@ -56,7 +56,7 @@ export const buildClientTakeoverSong = (track: NeteaseClientTrack): SongResult =
         id: `client-artist-${track.id}-${index}`,
         name,
     })),
-    album: { id: `client-album-${track.id}`, name: track.album ?? '' },
+    album: { id: `client-album-${track.id}`, name: track.album ?? '', coverUrl: track.coverUrl },
     durationMs: track.durationMs,
     sourceRef: { kind: 'online', providerId: 'netease', mediaId: String(track.id) },
 });

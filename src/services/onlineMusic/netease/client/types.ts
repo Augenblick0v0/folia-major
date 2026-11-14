@@ -53,6 +53,8 @@ export interface NeteaseClientTrack {
     /** 客户端 store 或本次 song/detail 缓存有才填；UI 反射以 omni.getSongDetail 为准 */
     artists?: string[];
     album?: string;
+    /** Album art URL the client already holds (`resourceCoverUrl` or song/detail `al.picUrl`). */
+    coverUrl?: string;
 }
 
 /** The renderer's extrapolation state for one snapshot; see clock.ts. */

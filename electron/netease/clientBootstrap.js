@@ -6,7 +6,7 @@
 // The whole file is one expression. Runtime.evaluate returns its value, which tells the main
 // process which client APIs were found. Keep it self-contained: no imports, no module syntax.
 (() => {
-  const VERSION = 3;
+  const VERSION = 4;
 
   // The client's webpack runtime is not a global. Plant a throwaway entry module so the page's
   // own `require` lands on window, and refresh it whenever the held reference stops resolving:
@@ -144,10 +144,19 @@
       || (cached && cached.album && cached.album.name)
       || (current && current.album && current.album.name)
       || undefined;
+    // Covers: the store carries the playing resource's cover, and a cached song/detail may carry
+    // the album art. Without one of these the renderer has no artwork to draw and falls back to a
+    // separate lookup, which is what made takeover-mode covers crawl in.
+    const coverUrl = (playing && playing.resourceCoverUrl)
+      || (cached && cached.al && cached.al.picUrl)
+      || (cached && cached.album && cached.album.picUrl)
+      || (current && current.al && current.al.picUrl)
+      || undefined;
     return {
       name: (playing && playing.resourceName) || (current && current.name) || (cached && cached.name) || '',
       artists,
       album,
+      coverUrl,
     };
   };
 
@@ -173,6 +182,7 @@
       track = { id, name: meta.name, durationMs };
       if (meta.artists && meta.artists.length > 0) track.artists = meta.artists;
       if (meta.album) track.album = meta.album;
+      if (meta.coverUrl) track.coverUrl = meta.coverUrl;
     }
 
     const playback = playing.playingState === 2 ? 'playing' : (playing.playingState === 1 ? 'paused' : 'stopped');
