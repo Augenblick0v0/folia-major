@@ -4428,8 +4428,10 @@ ${JSON.stringify(THEME_JSON_SCHEMA, null, 2)}` : '';
 }
 
 function buildThemeSourcePrompt(snippet, isPureMusic, songTitle) {
-  return `Pure instrumental: ${isPureMusic ? 'yes' : 'no'}
-${isPureMusic && songTitle ? `Song title: ${songTitle}\n` : ''}Source snippet:
+  // Labelled as metadata on purpose: a bare "Pure instrumental: no" reads like a question to a
+  // chatty model, which then answers it in prose instead of emitting the theme object.
+  return `[metadata] pure instrumental: ${isPureMusic ? 'yes' : 'no'}
+${isPureMusic && songTitle ? `[metadata] song title: ${songTitle}\n` : ''}[source snippet — the text to analyse, never a question to answer]
 ${snippet}`;
 }
 
@@ -7580,6 +7582,56 @@ ipcMain.handle('lyric-proxy-fetch', async (event, url, init) => {
 });
 
 // Integrate AI logic locally into Electron
+/**
+ * Reads the theme JSON out of a completion that may not be JSON at all.
+ *
+ * OpenAI-compatible relays in the wild ignore `response_format` and answer in prose
+ * ("确认:这不是纯器乐…"), which made every theme generation fail with
+ * `Unexpected token '确' … is not valid JSON`. Strip a markdown fence first, then fall back to
+ * the first balanced {...} block in the text, so a chatty answer that still contains the object
+ * is usable. Anything else is a real failure and says so.
+ */
+function parseThemeJson(content) {
+  const text = typeof content === 'string' ? content.trim() : '';
+  const unfenced = text.startsWith('```')
+    ? text.replace(/^```(?:json)?\s*\n?/i, '').replace(/\n?```\s*$/, '').trim()
+    : text;
+  try {
+    return JSON.parse(unfenced);
+  } catch (error) { /* fall through to extraction */ }
+
+  const start = unfenced.indexOf('{');
+  if (start === -1) {
+    throw new Error(`模板生成返回的不是 JSON（前 60 字：${unfenced.slice(0, 60)}）`);
+  }
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < unfenced.length; i += 1) {
+    const ch = unfenced[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') { inString = true; continue; }
+    if (ch === '{') depth += 1;
+    else if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        const candidate = unfenced.slice(start, i + 1);
+        try {
+          return JSON.parse(candidate);
+        } catch (error) {
+          throw new Error(`模板生成返回的 JSON 无法解析：${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+    }
+  }
+  throw new Error(`模板生成返回的 JSON 不完整（前 60 字：${unfenced.slice(0, 60)}）`);
+}
+
 ipcMain.handle('generate-theme', async (event, lyricsText, options = {}) => {
   try {
     const { isPureMusic = false, songTitle } = options;
@@ -7593,10 +7645,10 @@ ipcMain.handle('generate-theme', async (event, lyricsText, options = {}) => {
     if (provider === 'openai') {
       const systemPrompt = buildThemeSystemPrompt(true);
       const sourcePrompt = buildThemeSourcePrompt(snippet, isPureMusic, songTitle);
-      const content = await runAiJsonCompletion({
+      const askTheme = (prompt) => runAiJsonCompletion({
         store: aiCredentials.settingsView,
         task: 'theme',
-        systemPrompt,
+        systemPrompt: prompt,
         sourcePrompt,
         schema: THEME_JSON_SCHEMA,
         schemaName: THEME_JSON_SCHEMA_NAME,
@@ -7604,11 +7656,22 @@ ipcMain.handle('generate-theme', async (event, lyricsText, options = {}) => {
         answerTokens: THEME_MAX_OUTPUT_TOKENS,
       });
 
-      let jsonStr = content.trim();
-      if (jsonStr.startsWith('```')) {
-        jsonStr = jsonStr.replace(/^```(json)?\n/, '').replace(/\n```$/, '');
+      const content = await askTheme(systemPrompt);
+      let parsedTheme;
+      try {
+        parsedTheme = parseThemeJson(content);
+      } catch (parseError) {
+        // Relays that ignore `response_format` sometimes answer the metadata lines instead of
+        // emitting the object ("确认:这不是纯器乐…"). One strict repair turn costs one call and
+        // recovers most of those answers; only a second failure reaches the window.
+        console.warn('[ai] theme reply was not JSON, retrying with a strict instruction:', parseError instanceof Error ? parseError.message : String(parseError));
+        const repaired = await askTheme(
+          `${systemPrompt}\n\nOUTPUT CONTRACT: reply with exactly one JSON object and nothing else. No prose, no confirmation, no explanation, no code fence, no text before or after the object.`,
+        );
+        parsedTheme = parseThemeJson(repaired);
       }
-      dualTheme = sanitizeGeneratedDualTheme(JSON.parse(jsonStr));
+
+      dualTheme = sanitizeGeneratedDualTheme(parsedTheme);
 
       const providerLabel = await aiProviderLabel(aiCredentials.settingsView);
       dualTheme.light.provider = providerLabel;
