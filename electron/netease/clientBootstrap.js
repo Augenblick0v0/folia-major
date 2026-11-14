@@ -6,15 +6,48 @@
 // The whole file is one expression. Runtime.evaluate returns its value, which tells the main
 // process which client APIs were found. Keep it self-contained: no imports, no module syntax.
 (() => {
-  const VERSION = 2;
+  const VERSION = 3;
+
+  // The client's webpack runtime is not a global. Plant a throwaway entry module so the page's
+  // own `require` lands on window, and refresh it whenever the held reference stops resolving:
+  // a page reload inside orpheus replaces the module registry, which strands an old require.
+  const refreshRequire = () => {
+    try {
+      webpackJsonp.push([[987660], { 987660: function (module, exports, require) { window.__gpt_cm_require__ = require; } }, [[987660]]]);
+    } catch (error) { /* webpackJsonp gone: the held reference is all we get */ }
+    return window.__gpt_cm_require__;
+  };
+
+  const requireWorks = (fn) => {
+    if (typeof fn !== 'function') return false;
+    try {
+      const loaded = fn(8);
+      const app = loaded && loaded.a;
+      return Boolean(app && typeof app.getStore === 'function' && app.app && app.app._store);
+    } catch (error) {
+      return false;
+    }
+  };
+
+  // Reuse is only safe while the held require still reaches the store. A stale instance (after a
+  // page reload, or a client that restarted under it) reports every capability false and would
+  // otherwise poison every later connect, so it is dropped and rebuilt instead.
   const existing = window.__foliaNetease;
   if (existing && existing.version === VERSION) {
-    if (typeof existing.probe === 'function') existing.probe();
-    return { reused: true, capabilities: existing.capabilities() };
+    let existingCapabilities = null;
+    if (typeof existing.probe === 'function') {
+      try { existing.probe(); } catch (error) { existingCapabilities = null; }
+    }
+    try { existingCapabilities = existing.capabilities(); } catch (error) { existingCapabilities = null; }
+    if (existingCapabilities && existingCapabilities.playById === true) {
+      return { reused: true, capabilities: existingCapabilities };
+    }
+    try { delete window.__foliaNetease; } catch (error) { window.__foliaNetease = undefined; }
   }
 
-  const requireModule = window.__gpt_cm_require__;
-  if (typeof requireModule !== 'function') {
+  let requireModule = window.__gpt_cm_require__;
+  if (!requireWorks(requireModule)) requireModule = refreshRequire();
+  if (!requireWorks(requireModule)) {
     throw new Error('unsupported-client: window.__gpt_cm_require__ is not available');
   }
 
