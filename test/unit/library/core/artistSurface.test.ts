@@ -27,6 +27,7 @@ const snapshot = (overrides: Partial<LibraryArtistSnapshot> = {}): LibraryArtist
     status: 'ready',
     detail: { name: 'Artist' },
     topSongs: [song(1), song(2)],
+    hasMoreSongs: false,
     albums: [{ id: 'al-1', name: 'One' }],
     albumSync: { state: 'none' },
     error: null,
@@ -97,6 +98,26 @@ describe('artist capabilities', () => {
         expect(failed.reload).toMatchObject({ supported: true, enabled: true });
     });
 
+    it('opens every song (#918) only for a ready online artist with more songs than the top ones', () => {
+        const more = snapshot({ hasMoreSongs: true });
+        expect(resolveArtistCapabilities({ collection: online, snapshot: more, ...counts })['open-all-songs'])
+            .toMatchObject({ supported: true, enabled: true });
+        // Supported but not yet: loading, no detail, nothing past the top songs.
+        expect(resolveArtistCapabilities({ collection: online, snapshot: snapshot(), ...counts })['open-all-songs'])
+            .toMatchObject({ supported: true, enabled: false });
+        expect(resolveArtistCapabilities({ collection: online, snapshot: snapshot({ hasMoreSongs: true, detail: null }), ...counts })['open-all-songs'].enabled)
+            .toBe(false);
+        expect(resolveArtistCapabilities({
+            collection: online,
+            snapshot: snapshot({ status: 'loading', hasMoreSongs: true }),
+            ...counts,
+        })['open-all-songs']).toMatchObject({ supported: true, enabled: false, reason: 'loading' });
+        expect(resolveArtistCapabilities({ collection: online, snapshot: null, ...counts })['open-all-songs'].enabled).toBe(false);
+        // Local and Navidrome artists keep all their songs in their albums.
+        expect(resolveArtistCapabilities({ collection: local, snapshot: more, ...counts })['open-all-songs'].supported).toBe(false);
+        expect(resolveArtistCapabilities({ collection: { source: 'navidrome' }, snapshot: more, ...counts })['open-all-songs'].supported).toBe(false);
+    });
+
     it('resumes album paging only after a page failed (a paused one resumes by itself)', () => {
         const failed = snapshot({ albumSync: { state: 'interrupted', offset: 50, reason: 'failed' } });
         const paused = snapshot({ albumSync: { state: 'interrupted', offset: 50, reason: 'paused' } });
@@ -115,11 +136,15 @@ describe('artist command surface', () => {
     it('publishes enabled capabilities intersected with the declaration, in a fixed order', () => {
         const failed = snapshot({ albumSync: { state: 'interrupted', offset: 50, reason: 'failed' } });
         const capabilities = resolveArtistCapabilities({ collection: local, snapshot: failed, ...counts });
-        expect(resolveArtistSurfaceActions(capabilities)).toEqual(['play-top-songs', 'enqueue-top-songs', 'retry-albums', 'edit-entity']);
+        expect(resolveArtistSurfaceActions(capabilities)).toEqual(['play-top-songs', 'shuffle-top-songs', 'enqueue-top-songs', 'retry-albums', 'edit-entity']);
         expect(resolveArtistSurfaceActions(capabilities, { actions: ['play-scope', 'edit-entity'], extraActions: [] }))
             .toEqual(['play-top-songs', 'edit-entity']);
         const onlineCapabilities = resolveArtistCapabilities({ collection: online, snapshot: snapshot(), ...counts });
-        expect(resolveArtistSurfaceActions(onlineCapabilities, ALL_DECLARED)).toEqual(['play-top-songs', 'enqueue-top-songs', 'reload']);
+        expect(resolveArtistSurfaceActions(onlineCapabilities, ALL_DECLARED)).toEqual(['play-top-songs', 'shuffle-top-songs', 'enqueue-top-songs', 'reload']);
+        const withMoreSongs = resolveArtistCapabilities({ collection: online, snapshot: snapshot({ hasMoreSongs: true }), ...counts });
+        expect(resolveArtistSurfaceActions(withMoreSongs, ALL_DECLARED)).toEqual(['play-top-songs', 'shuffle-top-songs', 'enqueue-top-songs', 'reload', 'open-all-songs']);
+        // A suite that does not declare it offers no palette command for it.
+        expect(resolveArtistSurfaceActions(withMoreSongs, { actions: ['play-scope', 'reload'], extraActions: [] })).toEqual(['play-top-songs', 'reload']);
     });
 
     it('offers a suite entry when declared and supported, even while it is not enabled yet', () => {

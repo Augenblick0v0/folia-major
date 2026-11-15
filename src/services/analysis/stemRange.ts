@@ -1,4 +1,4 @@
-import { HTDEMUCS_GPU_SEGMENT, runHtdemucsGpu, type GpuRunOptions, type StemChannels } from './beatThisGpu';
+import { HTDEMUCS_GPU_SEGMENT, gpuStemsOnScreenUsable, runHtdemucsGpu, type GpuRunOptions, type StemChannels } from './beatThisGpu';
 
 // src/services/analysis/stemRange.ts
 // Any stretch of a track's four stems from htdemucs on the GPU, on the one segment grid every caller
@@ -225,8 +225,13 @@ export const forgetStemRange = (key: string, from: number, to: number, total: nu
     }
 };
 
-/** Who is separating: what it keeps for the others differs (see the header). */
-export type StemSeparator = 'drums' | 'stems';
+/**
+ * Who is separating: what it keeps for the others differs (see the header). 'drums' and 'pass' are a
+ * track's stem pass (stemPass.ts) - reading the drums alone, which a segment kept as its drums will
+ * do for, or more than the drums - and keep nothing for the drum hits (they are the drum hits, or
+ * carry them); 'stems' is automix.
+ */
+export type StemSeparator = 'drums' | 'pass' | 'stems';
 
 /**
  * One segment of `key` (a track of `total` samples): from the cache, or separated now on the GPU
@@ -267,7 +272,8 @@ export const separateStemSegment = async (
     if (!stems) return null;
     if (key && id) {
         if (inWantedRange(key, index, total, own) && stems.length === STEM_SOURCES.length) keep(id, stems, total);
-        else if (by === 'stems' && drumsWanted(key)) {
+        // Not once the picture's separation stopped for being too slow (beatThisGpu.ts): nothing would read them.
+        else if (by === 'stems' && drumsWanted(key) && gpuStemsOnScreenUsable()) {
             keep(id, drumsOnly(stems), total);
             drumsKept(key);
         }

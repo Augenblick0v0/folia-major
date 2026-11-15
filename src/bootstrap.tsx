@@ -13,10 +13,11 @@ import { installFoliumHomePageDismissal } from './components/app/home/foliumHome
 import { installLibrarySuiteChromeCommands } from './library/app/installLibrarySuiteChromeCommands';
 import { noteFoliumFirstScreenMounted, startFoliumForMainWindow } from './mods/runtime/mainWindowStart';
 import { installNativeDragGuard } from './utils/nativeDragGuard';
+import { prewarmSavedVisualizer, prewarmVisualizersWhenIdle } from './components/visualizer/prewarmVisualizers';
 import { bootNavidromeServerPreset } from './services/navidromeServerPreset';
 import { isNavidromeEnabled } from './services/navidromeService';
 import { setNavidromeEnabledState } from './stores/useLibraryStore';
-import { isMainAppSurface, isObsBrowserSourceSurface, isRemoteControlSurface, obsSourceKind } from './utils/appSurface';
+import { isMainAppSurface, isObsBrowserSourceSurface, isPerfCheckSurface, isRemoteControlSurface, obsSourceKind } from './utils/appSurface';
 // 副作用 import：store 在模块加载时就把 `<html data-reduce-motion>` 写好并保持同步。放在 bootstrap
 // 而不是 App 里，是因为下面按 URL 挂的根不止 App —— 远程控制窗口的进度辉光也读这个属性。
 import './stores/useMotionSettingsStore';
@@ -49,6 +50,8 @@ if (!rootElement) {
 }
 
 const root = ReactDOM.createRoot(rootElement);
+// The performance check's window, loaded only there.
+const PerfCheckApp = React.lazy(() => import('./components/perfCheck/PerfCheckApp'));
 const isObsBrowserSource = isObsBrowserSourceSurface;
 // obsSource=now-playing / playercap: static OBS overlay that connects directly to NowPlaying / PlayerCap in the browser (no Electron SSE relay).
 const isNowPlayingObsSource = isObsBrowserSource && obsSourceKind === 'now-playing';
@@ -64,6 +67,7 @@ const isMainApp = isMainAppSurface;
 const FirstScreenMounted: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     React.useEffect(() => {
         noteFoliumFirstScreenMounted();
+        prewarmVisualizersWhenIdle();
     }, []);
     return <>{children}</>;
 };
@@ -79,7 +83,9 @@ const renderApp = () => root.render(
               ? <ObsBrowserSourceApp />
               : isRemoteControl
                 ? <RemoteControlApp />
-                : <FirstScreenMounted><App /></FirstScreenMounted>}
+                : isPerfCheckSurface
+                  ? <React.Suspense fallback={null}><PerfCheckApp /></React.Suspense>
+                  : <FirstScreenMounted><App /></FirstScreenMounted>}
       </AppSplashGate>
     </React.StrictMode>
   );
@@ -88,6 +94,10 @@ const renderApp = () => root.render(
 // registry, so the commands are put into its list here, before anything renders (main window only,
 // like the mod commands below). A clashing execute shortcut throws here, at startup.
 if (isMainApp) installLibrarySuiteChromeCommands();
+
+// 保存的歌词样式可以趁首屏加载遮罩还在时先准备（雾笺在后台编着色器，见 visualizer/prewarmVisualizers.ts）。
+// 不等它，和下面的 mod 加载一起跑；别的启动慢的样式等首屏出来、页面空闲时再准备（FirstScreenMounted）。
+if (isMainApp) prewarmSavedVisualizer();
 
 const bootFolium = async () => {
     if (!isMainApp) return;
@@ -112,6 +122,8 @@ void Promise.allSettled([bootFolium(), bootNavidrome()])
         if (navidrome.status === 'rejected') console.warn('[Navidrome] Server preset boot failed:', navidrome.reason);
     })
     .finally(() => {
-        initializeLocalCoverRuntime();
+        // Not in the performance check's window: the cover migration it may start writes through a
+        // first-party channel (the main window runs it).
+        if (!isPerfCheckSurface) initializeLocalCoverRuntime();
         renderApp();
     });

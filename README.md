@@ -9,7 +9,7 @@
 
 Lyrics Reimagined // 辞曲新境
 
-[简体中文](README.md) | [English](README.en.md)
+简体中文 | [English](README.en.md)
 
 [![GitHub release](https://img.shields.io/github/v/release/chthollyphile/folia-major?label=release)](https://github.com/chthollyphile/folia-major/releases)
 [![License](https://img.shields.io/github/license/chthollyphile/folia-major)](https://github.com/chthollyphile/folia-major/blob/main/LICENSE)
@@ -50,6 +50,13 @@ Folia是一个以全屏沉浸式歌词播放为核心的在线音乐播放器，
 ## 展示
 
 ![visualizer](./img/visualizer.png)
+
+### 在线体验（社区版）
+
+在浏览器里直接试用：[folia.tangbot.xyz](https://folia.tangbot.xyz/)
+
+> [!NOTE]
+> 这是社区部署的演示站，仅供体验，部署来源为 [maimai993/folia-sonnet](https://github.com/maimai993/folia-sonnet)。它包含社区作者自己的改动，与官方 Web 版并不完全一致；使用中遇到问题请反馈到该社区仓库。长期使用建议下载桌面版或自行部署。
 
 ### 演示视频
 

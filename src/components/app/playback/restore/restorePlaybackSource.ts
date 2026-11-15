@@ -6,6 +6,8 @@ import { applyLocalLibraryEntityDisplay, buildUnifiedLocalSong } from '../../../
 import { getLocalLibraryCatalogSnapshot } from '../../../../services/localLibraryEntityRepository';
 import { getNavidromeConfig } from '../../../../services/navidromeService';
 import { applyOnlineAudioSourceMetadata } from '../../../../services/onlinePlayback';
+import { useAudioSettingsStore } from '../../../../stores/useAudioSettingsStore';
+import { isClientTakeoverSong } from '../../../../services/clientTakeover';
 import { notifyPlaybackFailed } from '../../../../services/hostExtensionHooks';
 import { wholeQueueWritesSoFar } from '../../../../services/wholeQueueWrites';
 import type { ThemeCacheSongKey } from '../../../../services/themeCache';
@@ -16,7 +18,6 @@ import { hasRenderableLyrics } from '../../../../utils/appPlaybackHelpers';
 import {
     getOnlineProviderIdForSong,
     getPlaybackSongKey,
-    getPlaybackSourceRef,
     isLocalPlaybackSong,
     isNavidromePlaybackSong,
     isSamePlaybackSong,
@@ -34,14 +35,15 @@ import { onlineFailureOf, type OnlineFailure } from '../../../../services/online
 import { getCachedSongCoverUrl, getSongCacheWithLegacyMigration } from '../../../../services/onlineMusic/resourceCache';
 import { getSongCoverUrl } from '../../../../services/onlineMusic/songMetadata';
 import { useOnlineProviderAccountStore } from '../../../../stores/useOnlineProviderAccountStore';
-import { useAudioSettingsStore } from '../../../../stores/useAudioSettingsStore';
-import { buildClientTakeoverDeckSrc, isClientTakeoverSong } from '../../../../services/clientTakeover';
 import { setStatusMessage as setStatusMsg, useStatusMessageStore } from '../../../../stores/useStatusMessageStore';
-import { setActiveLocalLyricsSource, setAudioSrc, setCachedCoverUrl, setCurrentSong, usePlaybackStore } from '../../../../stores/usePlaybackStore';
-import { askedSongKeyRef, replaceShownSong } from '../currentSong';
+import { setActiveLocalLyricsSource, setAudioSrc, setCachedCoverUrl, setCurrentSong, setDuration, usePlaybackStore } from '../../../../stores/usePlaybackStore';
+import { askedSongKeyRef, keepSongsOfProvidersStanding, providerDropsSoFar, replaceShownSong } from '../currentSong';
 import { onlineFailureToast } from '../source/onlineFailureToast';
-import { loadLocalSongAudio, loadNavidromeSongAudio, loadOnlineSongAudio } from '../source/songAudioSource';
+import { loadLocalSongAudio, loadLocalSongHifiSource, loadNavidromeSongAudio, loadOnlineSongAudio } from '../source/songAudioSource';
 import { useLyricSettingsStore } from '../../../../stores/useLyricSettingsStore';
+import { useHifiSettingsStore } from '../../../../stores/useHifiSettingsStore';
+import { beginHifiTrack, hifiRouteFor, releaseUnclaimedHifiTrack, whenHifiRuntimeKnown } from '../../../../services/hifi/hifiPlayback';
+import type { PlaybackRoute } from '../../../../types/hifi';
 
 // src/components/app/playback/restore/restorePlaybackSource.ts
 // Rehydrates playable audio and lyrics for a remembered song without reusing stale blob URLs.
@@ -87,17 +89,52 @@ type RestorePlaybackSourceParams = {
      * now with the restored song swapped in where it holds it, never put in front, instead of `queue`.
      */
     queueWritesAtStart?: number;
+    /**
+     * The time to resume at that the caller left (the window hand-off's position). On the web route
+     * <audio>'s loadedmetadata spends it; a local or Navidrome song restored on the HiFi route starts
+     * there and spends it here. Not given: it starts at its beginning.
+     */
+    pendingResumeTimeRef?: MutableRefObject<number | null>;
 };
 
+// null on the HiFi route, which makes no blob URL: the one that was there is revoked all the same.
 const replaceBlobUrl = (
     blobUrlRef: MutableRefObject<string | null>,
-    nextBlobUrl: string,
+    nextBlobUrl: string | null,
 ) => {
     if (blobUrlRef.current) {
         URL.revokeObjectURL(blobUrlRef.current);
     }
     blobUrlRef.current = nextBlobUrl;
 };
+
+/**
+ * The engine a restored local or Navidrome song plays on. A restore runs at launch, often before the
+ * mpv runtime was first asked about: with HiFi on, that answer is waited for, or the song would go to
+ * the web engine for want of it. With HiFi off nothing is waited for: the route is web whatever it says.
+ */
+const restoredSongRoute = async (kind: 'local' | 'navidrome', songKey: string): Promise<PlaybackRoute> => {
+    if (useHifiSettingsStore.getState().enabled) await whenHifiRuntimeKnown();
+    return hifiRouteFor(kind, songKey);
+};
+
+/** The time a HiFi restore starts at: what the caller left to resume at, spent here. */
+const takeResumeTime = (pendingResumeTimeRef: MutableRefObject<number | null> | undefined): number => {
+    const startSec = pendingResumeTimeRef?.current ?? 0;
+    if (pendingResumeTimeRef) pendingResumeTimeRef.current = null;
+    return startSec;
+};
+
+/*
+ * A HiFi restore that does not take over a running mpv is not loaded yet: until the first play (or a seek,
+ * or an intent to play left by the caller, which the HiFi bridge acts on), mpv does not open the output
+ * device, so a session restored paused does not hold an exclusive DAC. Its HiFi failure falls back to
+ * the web route only while the restore is still wanted.
+ */
+const deferredHifiLoad = (overtaken: () => boolean) => ({
+    deferLoad: true,
+    stillWanted: () => !overtaken(),
+});
 
 // A failed restore shows its one message, with no countdown and no buttons. It never takes the place
 // of a toast that stays (a newer play's retry or countdown, which the store cannot tell apart from
@@ -109,7 +146,12 @@ const showRestoreMessage = (message: StatusMessage): boolean => {
     return true;
 };
 
-export const restorePlaybackSourceForSong = async (
+/**
+ * The restore itself (see restorePlaybackSourceForSong). A window that took nothing over from mpv and
+ * whose restore lands on the web route, fails or is overtaken leaves the track an earlier window left
+ * playing to nobody: restorePlaybackSourceForSong stops it then.
+ */
+const restoreSourceForSong = async (
     song: SongResult,
     {
         audioQuality,
@@ -124,15 +166,19 @@ export const restorePlaybackSourceForSong = async (
         stillWanted,
         hasFallbackSource = false,
         queueWritesAtStart,
+        pendingResumeTimeRef,
     }: RestorePlaybackSourceParams,
 ): Promise<RestorePlaybackSourceOutcome> => {
     let restoredSongKey = getPlaybackSongKey(song);
     const overtaken = () => !stillWanted() || askedSongKeyRef.current !== restoredSongKey;
+    // A sign-out of another platform while this restore waits takes that platform's songs out of the queue it
+    // writes and saves as well (as a play does, see keepSongsOfProvidersStanding): the store's queue lost them already.
+    const providerDropsAtStart = providerDropsSoFar();
     // The queue to write (`write`, null for nothing) and to save once the restored song is in it: `own`,
     // or after a whole-queue write since the caller started, the store's queue of now (see queueWritesAtStart).
     const queueAfterRestore = (restoredSong: SongResult, own: () => SongResult[]): { write: SongResult[] | null; save: SongResult[] } => {
         if (queueWritesAtStart === undefined || wholeQueueWritesSoFar() === queueWritesAtStart) {
-            const given = own();
+            const given = keepSongsOfProvidersStanding(own(), providerDropsAtStart);
             return { write: given, save: given };
         }
         const live = usePlaybackStore.getState().playQueue;
@@ -161,9 +207,22 @@ export const restorePlaybackSourceForSong = async (
 
         currentOnlineAudioUrlFetchedAtRef.current = null;
         const audio = loadNavidromeSongAudio(config, navidromeSongToRestore);
-        await audio.takeServerGain();
+        const onHifi = await restoredSongRoute('navidrome', `navidrome:${navidromeId}`) === 'hifi';
+        // The HiFi route also takes the file's format from the server's record: its signal path shows it.
+        await (onHifi ? audio.takeServerGainAndFormat() : audio.takeServerGain());
         if (overtaken()) return 'stale';
-        setAudioSrc(audio.streamUrl);
+        if (onHifi) {
+            // Taken over where mpv still plays it (a rebuilt window), else held at the resume time and loaded on the first play.
+            void beginHifiTrack({
+                song,
+                source: { kind: 'navidrome', carrier: navidromeSongToRestore, streamUrl: audio.rawStreamUrl() },
+                startSec: takeResumeTime(pendingResumeTimeRef),
+                adoptRunning: true,
+                ...deferredHifiLoad(overtaken),
+            });
+        } else {
+            setAudioSrc(audio.streamUrl);
+        }
         const restoredCoverUrl = getSongCoverUrl(song) || navidromeSongToRestore.navidromeData.coverArtUrl;
         if (restoredCoverUrl) {
             setCachedCoverUrl(restoredCoverUrl);
@@ -224,10 +283,13 @@ export const restorePlaybackSourceForSong = async (
             return 'failed';
         }
 
-        const audio = await loadLocalSongAudio(songToRestore);
+        // Asked before the file is read: on the HiFi route mpv reads the file itself, and no blob URL is made.
+        const onHifi = await restoredSongRoute('local', `local:${songToRestore.id}`) === 'hifi';
+        if (overtaken()) return 'stale';
+        const audio = onHifi ? await loadLocalSongHifiSource(songToRestore) : await loadLocalSongAudio(songToRestore);
         if (overtaken()) {
             // Never played: nothing holds this URL.
-            if (audio) URL.revokeObjectURL(audio.blobUrl);
+            if (audio && 'blobUrl' in audio) URL.revokeObjectURL(audio.blobUrl);
             return 'stale';
         }
         if (!audio) {
@@ -236,12 +298,13 @@ export const restorePlaybackSourceForSong = async (
             return 'failed';
         }
 
-        const { blobUrl } = audio;
+        // null on the HiFi route.
+        const blobUrl = 'blobUrl' in audio ? audio.blobUrl : null;
         songToRestore = audio.localSong;
         const localCoverUrl = getLocalCoverAssetUrl(songToRestore.localCoverAssetId, 1024);
         const catalog = await getLocalLibraryCatalogSnapshot();
         if (overtaken()) {
-            URL.revokeObjectURL(blobUrl);
+            if (blobUrl) URL.revokeObjectURL(blobUrl);
             return 'stale';
         }
         const restoredSong = applyLocalLibraryEntityDisplay(buildUnifiedLocalSong({
@@ -257,7 +320,18 @@ export const restorePlaybackSourceForSong = async (
         restoredSongKey = getPlaybackSongKey(restoredSong);
         replaceBlobUrl(blobUrlRef, blobUrl);
         currentOnlineAudioUrlFetchedAtRef.current = null;
-        setAudioSrc(blobUrl);
+        if ('file' in audio) {
+            // Taken over where mpv still plays it (a rebuilt window), else held at the resume time and loaded on the first play.
+            void beginHifiTrack({
+                song: restoredSong,
+                source: { kind: 'local', localSong: songToRestore, file: audio.file },
+                startSec: takeResumeTime(pendingResumeTimeRef),
+                adoptRunning: true,
+                ...deferredHifiLoad(overtaken),
+            });
+        } else {
+            setAudioSrc(audio.blobUrl);
+        }
 
         const resolvedLyrics = await resolveLocalSongLyrics(
             songToRestore,
@@ -307,6 +381,26 @@ export const restorePlaybackSourceForSong = async (
         });
     }
 
+    if (omni.canPlayExternally(song)) {
+        // A provider's own player has no track after a restart: the remembered song is shown as it
+        // was - paused, at its position - and the play path starts it when the listener asks. Its
+        // lyrics are still restored, so the screen is not empty. (A window rebuild is different: the
+        // player outlives the window, and the hand-off's restore takes the running track over after
+        // this returns; see useElectronWindowPlaybackHandoff.)
+        try {
+            const cachedLyrics = await getSongCacheWithLegacyMigration<LyricData>('lyric', song, migrateLyricDataRenderHints);
+            if (overtaken()) return 'stale';
+            if (song.durationMs > 0) setDuration(song.durationMs / 1000);
+            const restoredLyrics = resolveOnlineLyrics(onlineLyricsState, cachedLyrics);
+            if (restoredLyrics) setLyrics(restoredLyrics);
+        } catch (error) {
+            if (overtaken()) return 'stale';
+            console.warn('[restorePlaybackSourceForSong] Lyrics could not be restored for the external player', error);
+        }
+        return 'restored';
+    }
+
+    // A takeover song is played by the desktop client, so it needs no playable URL of its own.
     const playbackEngine = useAudioSettingsStore.getState().playbackEngine;
     const isTakeoverRestore = playbackEngine !== undefined
         && playbackEngine !== 'local'
@@ -318,21 +412,9 @@ export const restorePlaybackSourceForSong = async (
 
     // Where the platform could not be reached the load asks again by itself while the restore is wanted,
     // unless the caller has a source to fall back on.
-    // A takeover song has no address of its own to restore: its deck source is the per-song silent
-    // data URI, and the client is asked to play it by the caller. The rest of the restore (lyrics,
-    // cover, queue) still runs, so the remembered screen comes back whole.
-    const audioResult = isTakeoverRestore
-        ? {
-            kind: 'ok' as const,
-            audioSrc: buildClientTakeoverDeckSrc(Number(getPlaybackSourceRef(song).mediaId)),
-            replayGain: song.replayGain,
-            blobUrl: undefined,
-            preview: undefined,
-            fetchedAt: null,
-        }
-        : await loadOnlineSongAudio(song, audioQuality, null, hasFallbackSource
-            ? {}
-            : { retry: { isCurrent: () => !overtaken() } });
+    const audioResult = await loadOnlineSongAudio(song, audioQuality, null, hasFallbackSource
+        ? {}
+        : { retry: { isCurrent: () => !overtaken() } });
     if (overtaken()) {
         // Never played: nothing holds this URL.
         if (audioResult.kind === 'ok' && audioResult.blobUrl) URL.revokeObjectURL(audioResult.blobUrl);
@@ -404,5 +486,21 @@ export const restorePlaybackSourceForSong = async (
         if (overtaken()) return 'stale';
         console.warn('[restorePlaybackSourceForSong] Lyrics could not be restored after the source landed', error);
         return 'restored';
+    }
+};
+
+export const restorePlaybackSourceForSong = async (
+    song: SongResult,
+    params: RestorePlaybackSourceParams,
+): Promise<RestorePlaybackSourceOutcome> => {
+    let outcome: RestorePlaybackSourceOutcome | 'threw' = 'threw';
+    try {
+        outcome = await restoreSourceForSong(song, params);
+        return outcome;
+    } finally {
+        // A restore that landed on the web route has set its address, and the route guard has stopped
+        // mpv then; this covers the restores that set none. Nothing happens where this window holds a
+        // HiFi track of its own (it took the running one over, or its own load replaces it).
+        if (outcome !== 'restored') releaseUnclaimedHifiTrack(`restore ${outcome}`);
     }
 };

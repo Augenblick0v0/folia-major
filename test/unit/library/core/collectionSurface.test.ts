@@ -54,6 +54,33 @@ describe('core collection surface', () => {
         runGridSurfaceAction('play-filtered', params);
         expect(params.playFiltered).toHaveBeenCalledTimes(1);
     });
+
+    it('publishes collect-filtered only when the host can collect, the scope has songs and the suite declares it', () => {
+        const collectFiltered = vi.fn();
+        expect(buildGridSurfaceState(core()).availableActions).not.toContain('collect-filtered');
+        expect(buildGridSurfaceState(core({ collectFiltered, filteredTrackCount: 0 })).availableActions).not.toContain('collect-filtered');
+        const undeclared: LibraryDeclaredActions = { actions: ['play-scope', 'enqueue-scope'], extraActions: [] };
+        expect(buildGridSurfaceState(core({ collectFiltered, declaredActions: undeclared })).availableActions).not.toContain('collect-filtered');
+
+        const params = core({ collectFiltered });
+        expect(buildGridSurfaceState(params).availableActions).toContain('collect-filtered');
+        runGridSurfaceAction('collect-filtered', params);
+        expect(collectFiltered).toHaveBeenCalledTimes(1);
+    });
+
+    it('publishes shuffle-play-filtered only when the suite gives it, the scope has songs and the suite declares it', () => {
+        const shufflePlayFiltered = vi.fn();
+        expect(buildGridSurfaceState(core()).availableActions).not.toContain('shuffle-play-filtered');
+        expect(buildGridSurfaceState(core({ shufflePlayFiltered, filteredTrackCount: 0 })).availableActions).not.toContain('shuffle-play-filtered');
+        const undeclared: LibraryDeclaredActions = { actions: ['play-scope', 'enqueue-scope'], extraActions: [] };
+        expect(buildGridSurfaceState(core({ shufflePlayFiltered, declaredActions: undeclared })).availableActions).not.toContain('shuffle-play-filtered');
+
+        const params = core({ shufflePlayFiltered });
+        expect(buildGridSurfaceState(params).availableActions).toContain('shuffle-play-filtered');
+        runGridSurfaceAction('shuffle-play-filtered', params);
+        expect(shufflePlayFiltered).toHaveBeenCalledTimes(1);
+        expect(params.playFiltered).not.toHaveBeenCalled();
+    });
 });
 
 /** 网格那样什么分支都打开的参数：每个命令都可用，好看出声明过滤掉了哪些。 */
@@ -66,11 +93,14 @@ const everything = (declaredActions?: LibraryDeclaredActions): GridSurfaceParams
     canOrganizeSongInfo: true,
     canExportPlaylist: true,
     canEditEntity: true,
+    canSetCover: true,
     canEditPlaylist: true,
     canToggleSubscribe: true,
     toggleInfoPanel: vi.fn(),
     resyncFolder: vi.fn(),
     toggleSubscribe: vi.fn(),
+    collectFiltered: vi.fn(),
+    shufflePlayFiltered: vi.fn(),
     declaredActions,
 });
 
@@ -138,5 +168,7 @@ describe('collection sync counts', () => {
         expect(resolveCollectionSyncCounts(1500, 3000)).toEqual({ loaded: (1500).toLocaleString(), total: (3000).toLocaleString() });
         expect(resolveCollectionSyncCounts(10, undefined)).toBeNull();
         expect(resolveCollectionSyncCounts(10, 0)).toBeNull();
+        // More loaded than the recorded count: the count is stale, so no "180 / 150".
+        expect(resolveCollectionSyncCounts(180, 150)).toBeNull();
     });
 });

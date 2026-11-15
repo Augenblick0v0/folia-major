@@ -16,7 +16,7 @@ vi.mock('@/services/db', () => ({
 }));
 
 const { runHtdemucsGpu } = vi.hoisted(() => ({ runHtdemucsGpu: vi.fn() }));
-vi.mock('@/services/analysis/beatThisGpu', () => ({ HTDEMUCS_GPU_SEGMENT: 16, runHtdemucsGpu }));
+vi.mock('@/services/analysis/beatThisGpu', () => ({ HTDEMUCS_GPU_SEGMENT: 16, runHtdemucsGpu, gpuStemsOnScreenUsable: () => true }));
 
 const { drumStemSegments, drumStemWindow, separateDrumStem, startDrumStem } = await import('@/services/analysis/drumStem');
 const { DRUMLESS_COVERAGE, drumBandTracks, drumCoverage, drumHitsSettled, forgetSettledDrumHits, getDrumHits, loadStoredDrumHits, loadTrackDrumHits, pickBandHits, pickDrumHits, setWantedDrumTrack } = await import('@/services/analysis/drumHits');
@@ -87,7 +87,6 @@ describe('drum stem', () => {
         const reached = 12 + 16;
         const resumed = startDrumStem(50);
         resumed.drums.set(progress.drums.slice(tailStart, reached), tailStart);
-        resumed.weight.set(progress.weight.slice(tailStart, reached), tailStart);
         resumed.next = progress.next;
         resumed.divided = progress.divided;
         const carried = await separateDrumStem(left, right, undefined, undefined, resumed);

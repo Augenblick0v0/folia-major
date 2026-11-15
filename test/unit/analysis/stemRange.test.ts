@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // drum hits' tail by automix, automix's head by the drum hits - instead of run again.
 
 const { runHtdemucsGpu } = vi.hoisted(() => ({ runHtdemucsGpu: vi.fn() }));
-vi.mock('@/services/analysis/beatThisGpu', () => ({ HTDEMUCS_GPU_SEGMENT: 16, runHtdemucsGpu }));
+vi.mock('@/services/analysis/beatThisGpu', () => ({ HTDEMUCS_GPU_SEGMENT: 16, runHtdemucsGpu, gpuStemsOnScreenUsable: () => true }));
 
 const { dropStemDrums, forgetStemRange, peekStemSegment, resetStemSegmentsForTests, segmentsOver, separateStemRange, setStemDrumsWanted, stemRangeSpan, wantStemRange } = await import('@/services/analysis/stemRange');
 const { separateDrumStem } = await import('@/services/analysis/drumStem');
@@ -124,6 +124,17 @@ describe('stem ranges, from review', () => {
         wantStemRange('own', 30, 50, total);
         expect(await separateStemRange({ key: 'own', left, right, offset: 0, total, from: 30, to: 50, options })).not.toBeNull();
         expect(peekStemSegment('own', 3)).toHaveLength(1);
+    });
+
+    it('keeps no drums for the drum hits from a stem pass that reads the voice beside them', async () => {
+        const total = 50;
+        const { left, right } = track(total);
+        const { runStemPass, startStemReader, wholeStemWindow } = await import('@/services/analysis/stemPass');
+        const reader = (source: 'drums' | 'vocals') => ({ source, ...startStemReader(total), window: wholeStemWindow(total), read: () => undefined });
+        // The drum hits of 'self' may still be separated (the default): automix's run would keep its drums.
+        const readers = [reader('drums'), reader('vocals')];
+        expect(await runStemPass({ left, right, key: 'self', readers: () => readers })).toBe(true);
+        for (let index = 0; index < 5; index += 1) expect(peekStemSegment('self', index)).toBeNull();
     });
 
     it('keeps the drums alone in buffers of their own, not views that hold the other stems', async () => {

@@ -9,7 +9,7 @@
 
 Lyrics Reimagined // 辞曲新境
 
-[简体中文](README.md) | [English](README.en.md)
+[简体中文](README.md) | English
 
 [![GitHub release](https://img.shields.io/github/v/release/chthollyphile/folia-major?label=release)](https://github.com/chthollyphile/folia-major/releases)
 [![License](https://img.shields.io/github/license/chthollyphile/folia-major)](https://github.com/chthollyphile/folia-major/blob/main/LICENSE)
@@ -48,6 +48,13 @@ To use Folia on a phone or in a browser, [deploy the web app to Vercel in one cl
 ## Showcase
 
 ![visualizer](./img/visualizer.png)
+
+### Try it online (community build)
+
+Try Folia in your browser: [folia.tangbot.xyz](https://folia.tangbot.xyz/)
+
+> [!NOTE]
+> This is a community-hosted demo, for trying Folia out only. It is deployed from [maimai993/folia-sonnet](https://github.com/maimai993/folia-sonnet) and includes the community author's own changes, so it is not identical to the official web version. Please report any issues to that community repository. For everyday use, download the desktop app or deploy your own instance.
 
 ### Demo videos
 
