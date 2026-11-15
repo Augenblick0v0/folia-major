@@ -826,6 +826,22 @@ export function usePlaybackQueueController({
             setDuration(0);
             setAudioSrc(null);
             setAudioSrc(buildClientTakeoverDeckSrc(clientTakeoverTrackId));
+            // Artwork: the library row carries the playlist's cover, but the client's snapshot is
+            // authoritative for what is sounding now and is the only place a cover exists when the
+            // row has none. Seed from the song, then adopt the snapshot's cover once it names this
+            // track — that is what makes the card paint instead of sitting empty.
+            setCachedCoverUrl(getProviderSongMetadata(song).coverUrl ?? null);
+            void (async () => {
+                try {
+                    const snapshot = await clientTakeoverService.getSnapshot();
+                    if (askedSongKeyRef.current !== getPlaybackSongKey(song)) return;
+                    if (!snapshot || !snapshot.track || snapshot.track.id !== clientTakeoverTrackId) return;
+                    if (snapshot.track.coverUrl) setCachedCoverUrl(snapshot.track.coverUrl);
+                    if (snapshot.track.durationMs > 0) setDuration(snapshot.track.durationMs / 1000);
+                } catch (error) {
+                    console.warn('[ClientTakeover] snapshot cover adoption failed', error);
+                }
+            })();
             preloadedOnlineAudioResult = {
                 kind: 'ok',
                 audioSrc: buildClientTakeoverDeckSrc(clientTakeoverTrackId),
@@ -1237,7 +1253,28 @@ export function usePlaybackQueueController({
         } finally {
             if (askedSongKeyRef.current === songKey) setIsLyricsLoading(false);
         }
-    }, [audioRef, currentTime, setAudioSrc, setCachedCoverUrl, setCurrentLineIndex, setDuration, setIsLyricsLoading, setLyrics, userId]);
+
+        // Mirror the client's queue: a playlist picked inside the client should replace the one
+        // Folia started with, otherwise the panel keeps showing a list that is no longer sounding.
+        // Skipped when the ids already match, so an ordinary next/previous does not rebuild the
+        // queue (and its React keys) on every track change.
+        void (async () => {
+            try {
+                const clientQueue = await clientTakeoverService.getQueue();
+                if (askedSongKeyRef.current !== songKey) return;
+                if (clientQueue.length === 0) return;
+                const current = usePlaybackStore.getState().playQueue;
+                const sameOrder = current.length === clientQueue.length && current.every((item, index) => (
+                    isClientTakeoverSong(item)
+                    && Number(getPlaybackSourceRef(item).mediaId) === clientQueue[index].id
+                ));
+                if (sameOrder) return;
+                setPlayQueue(clientQueue.map(buildClientTakeoverSong));
+            } catch (error) {
+                console.warn('[ClientTakeover] could not mirror the client queue', error);
+            }
+        })();
+    }, [audioRef, currentTime, setAudioSrc, setCachedCoverUrl, setCurrentLineIndex, setDuration, setIsLyricsLoading, setLyrics, setPlayQueue, userId]);
 
     const playOnlineQueueFromStart = useCallback((songs: SongResult[]) => {
         const retainedSongs = getPlayableOnlineQueue(songs);

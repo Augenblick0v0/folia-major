@@ -60,6 +60,7 @@ const createFakeBridge = () => {
         },
         disconnect: async () => status({ status: 'disconnected' }),
         getStatus: async () => status(),
+        getQueue: async () => [],
         getSnapshot: async () => snapshot(),
         playSong: async input => ok({
             revision: 2,

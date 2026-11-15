@@ -9,6 +9,7 @@ module.exports = Object.freeze({
   disconnect: 'netease-client:disconnect',
   getStatus: 'netease-client:get-status',
   getSnapshot: 'netease-client:get-snapshot',
+  getQueue: 'netease-client:get-queue',
   playSong: 'netease-client:play-song',
   play: 'netease-client:play',
   pause: 'netease-client:pause',

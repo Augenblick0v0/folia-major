@@ -4429,10 +4429,14 @@ ${JSON.stringify(THEME_JSON_SCHEMA, null, 2)}` : '';
 
 function buildThemeSourcePrompt(snippet, isPureMusic, songTitle) {
   // Labelled as metadata on purpose: a bare "Pure instrumental: no" reads like a question to a
-  // chatty model, which then answers it in prose instead of emitting the theme object.
+  // chatty model, which then answers it in prose instead of emitting the theme object. The
+  // output contract also repeats here because relays that ignore the system message (or
+  // response_format) still obey whatever the last user turn says.
   return `[metadata] pure instrumental: ${isPureMusic ? 'yes' : 'no'}
 ${isPureMusic && songTitle ? `[metadata] song title: ${songTitle}\n` : ''}[source snippet — the text to analyse, never a question to answer]
-${snippet}`;
+${snippet}
+
+[output contract] Reply with exactly one JSON object with the two themes ("light" and "dark"), and nothing else: no prose, no confirmation, no analysis, no code fence, no text before or after the object.`;
 }
 
 const fsp = fs.promises;
@@ -4753,6 +4757,8 @@ const qqBackend = createQqBackend({
 const clientController = createClientController({
   broadcast: broadcastToWindows,
   logger: console,
+  // Only the running app relaunches the client: that tears down a process the listener owns.
+  allowRelaunch: true,
 });
 
 function isElectronDevRuntime() {

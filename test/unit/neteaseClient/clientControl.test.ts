@@ -100,7 +100,7 @@ class FakeWebSocket {
 }
 
 function defaultEvaluate(expression: string) {
-    if (expression === BOOTSTRAP) return INSTALL_RESULT;
+    if (expression.endsWith(BOOTSTRAP)) return INSTALL_RESULT;
     if (expression.includes('.readAll()')) return SNAPSHOT;
     return true;
 }
@@ -189,14 +189,14 @@ describe('netease client controller', () => {
             'Runtime.evaluate',
             'Runtime.evaluate',
         ]);
-        expect(socket.sent[1].params?.expression).toBe(BOOTSTRAP);
+        expect(socket.sent[1].params?.expression).toContain(BOOTSTRAP);
     });
 
     it('forwards playSong with the queue and the start position', async () => {
         const controller = createController();
         await controller.connect();
         FakeWebSocket.evaluate = (expression: string) => {
-            if (expression === BOOTSTRAP) return INSTALL_RESULT;
+            if (expression.endsWith(BOOTSTRAP)) return INSTALL_RESULT;
             if (expression.includes('.readAll()')) return SNAPSHOT;
             return true;
         };
@@ -220,7 +220,7 @@ describe('netease client controller', () => {
         const controller = createController({ broadcast });
         await controller.connect();
         FakeWebSocket.evaluate = (expression: string) => {
-            if (expression === BOOTSTRAP) return INSTALL_RESULT;
+            if (expression.endsWith(BOOTSTRAP)) return INSTALL_RESULT;
             if (expression.includes('.readAll()')) return SNAPSHOT;
             if (expression.includes('.next()')) return new Error('client-rejected: no next track');
             return true;
@@ -262,7 +262,7 @@ describe('netease client controller', () => {
         await controller.connect();
         const socket = FakeWebSocket.instances[0];
         FakeWebSocket.evaluate = (expression: string) => {
-            if (expression === BOOTSTRAP) return INSTALL_RESULT;
+            if (expression.endsWith(BOOTSTRAP)) return INSTALL_RESULT;
             if (expression.includes('.readAll()')) return SNAPSHOT;
             return true;
         };

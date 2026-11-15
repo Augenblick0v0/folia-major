@@ -109,6 +109,9 @@ const createNeteaseClientController = ({
   clearTimeoutImpl = clearTimeout,
   spawnImpl = spawn,
   execFileImpl = execFile,
+  // Off unless the host turns it on: relaunching kills and restarts the user's client, which a
+  // test harness must never do by accident.
+  allowRelaunch = false,
   pollIntervalMs = 500,
   fetchTimeoutMs = 1500,
   evaluateTimeoutMs = 5000,
@@ -178,6 +181,22 @@ const createNeteaseClientController = ({
   });
 
   const getSnapshot = () => (snapshotCache ? { ...snapshotCache } : null);
+
+  // The client's own queue, read on demand (a playlist changed inside the client is not worth
+  // carrying in every 500ms snapshot). Shares the command queue so a read never overlaps a
+  // playSong, and never touches capabilities: a queue read failing says nothing about control.
+  const getQueue = () => enqueue(async () => {
+    if (connectionState !== 'connected' || !socket) return [];
+    try {
+      const value = await evaluate('window.__foliaNetease && typeof window.__foliaNetease.readQueue === "function" ? JSON.stringify(window.__foliaNetease.readQueue()) : "[]"');
+      if (typeof value !== 'string') return [];
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (error) {
+      if (logger && typeof logger.warn === 'function') logger.warn('[ClientTakeover] queue read failed', error);
+      return [];
+    }
+  });
 
   const broadcastStatus = () => {
     emit(CHANNELS.status, getStatus());
@@ -643,7 +662,7 @@ const createNeteaseClientController = ({
         // the debug flag (a normal launch, an update, a reboot). Self-heal once: relaunch it
         // with the flag, then retry. A stale generation or a non-unreachable error rethrows.
         if (gen !== generation) return getStatus();
-        if (options.autoRelaunch !== false && looksLikeUnreachable(error)) {
+        if (allowRelaunch && options.autoRelaunch !== false && looksLikeUnreachable(error)) {
           setConnectionState('connecting', null);
           await relaunchClientWithDebugPort(gen);
           if (gen !== generation) return getStatus();
@@ -794,6 +813,7 @@ const createNeteaseClientController = ({
     disconnect,
     getStatus,
     getSnapshot,
+    getQueue,
     playSong,
     play,
     pause,

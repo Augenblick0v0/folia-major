@@ -149,6 +149,18 @@ const registerNeteaseClientIpc = ({
     () => null,
   );
 
+  handle(
+    CHANNELS.getQueue,
+    async () => {
+      try {
+        return await controller.getQueue();
+      } catch (error) {
+        return [];
+      }
+    },
+    () => [],
+  );
+
   guardedCommand(CHANNELS.playSong, async (_event, input) => {
     if (!isPlainObject(input)) return commandWithError(invalid('input must be an object.'));
     if (!isPositiveInteger(input.songId)) return commandWithError(invalid('songId must be a positive integer.'));

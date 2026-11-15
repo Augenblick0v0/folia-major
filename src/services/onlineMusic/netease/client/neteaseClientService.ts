@@ -9,6 +9,7 @@ import {
     reanchor,
 } from './clock';
 import { NO_CAPABILITIES } from './types';
+import type { NeteaseClientTrack } from './types';
 import type {
     NeteaseClientCapabilities,
     NeteaseClientClockAnchor,
@@ -79,6 +80,8 @@ export interface NeteaseClientService {
     getStatus(): Promise<NeteaseClientStatus>;
     getSnapshot(): Promise<NeteaseClientSnapshot | null>;
     getSnapshotSync(): NeteaseClientSnapshot | null;
+    /** The client's own play queue, so Folia can mirror a playlist changed inside the client. */
+    getQueue(): Promise<NeteaseClientTrack[]>;
 
     playSong(input: NeteaseClientPlaySongInput): Promise<NeteaseClientCommandResult>;
     play(): Promise<NeteaseClientCommandResult>;
@@ -315,6 +318,17 @@ export const createNeteaseClientService = (
         },
 
         getSnapshotSync: () => snapshotCache,
+
+        async getQueue() {
+            if (!bridge || lastStatus.status !== 'connected') return [];
+            try {
+                const queue = await bridge.getQueue();
+                return Array.isArray(queue) ? queue : [];
+            } catch (error) {
+                console.warn('[ClientTakeover] could not read the client queue', error);
+                return [];
+            }
+        },
 
         playSong(input) {
             if (!bridge) return Promise.resolve(notConnectedResult());

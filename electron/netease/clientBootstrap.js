@@ -6,7 +6,7 @@
 // The whole file is one expression. Runtime.evaluate returns its value, which tells the main
 // process which client APIs were found. Keep it self-contained: no imports, no module syntax.
 (() => {
-  const VERSION = 4;
+  const VERSION = 5;
 
   // The client's webpack runtime is not a global. Plant a throwaway entry module so the page's
   // own `require` lands on window, and refresh it whenever the held reference stops resolving:
@@ -205,6 +205,42 @@
     };
   };
 
+  // The client's own play queue, in its order, so Folia can mirror a playlist the listener
+  // changed inside the client instead of holding the one it started with. Capped: a huge queue
+  // is not worth a megabyte of IPC on every change.
+  const QUEUE_LIMIT = 500;
+  const readQueue = () => {
+    let list;
+    try {
+      const store = getStore();
+      const playingList = store.playingList || {};
+      list = Array.isArray(playingList.curPlayingList) ? playingList.curPlayingList : [];
+    } catch (error) {
+      throw new Error('unsupported-client: ' + (error && error.message ? error.message : String(error)));
+    }
+    const out = [];
+    for (const entry of list.slice(0, QUEUE_LIMIT)) {
+      const track = entry && (entry.track || entry.localTrack) ? (entry.track || entry.localTrack) : null;
+      const id = Number((track && track.id) || (entry && entry.id));
+      if (!Number.isInteger(id) || id <= 0) continue;
+      const artists = Array.isArray(track && track.artists)
+        ? track.artists.map((artist) => (typeof artist === 'string' ? artist : artist && artist.name)).filter(Boolean)
+        : undefined;
+      const albumName = track && track.album && track.album.name;
+      const coverUrl = (track && track.album && (track.album.picUrl || track.album.coverUrl)) || undefined;
+      const duration = track && (track.duration || track.dt);
+      out.push({
+        id,
+        name: (track && track.name) || '',
+        durationMs: finite(duration) ? Math.round(duration) : 0,
+        ...(artists && artists.length > 0 ? { artists } : {}),
+        ...(albumName ? { album: albumName } : {}),
+        ...(coverUrl ? { coverUrl } : {}),
+      });
+    }
+    return out;
+  };
+
   const playSong = async (songId, queueIds, startPositionSec) => {
     const token = ++playToken;
     const targetId = Number(songId);
@@ -324,6 +360,7 @@
     probe: bindProgress,
     capabilities,
     readAll,
+    readQueue,
     playSong,
     cancelPlay,
     play,

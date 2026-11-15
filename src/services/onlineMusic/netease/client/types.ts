@@ -111,6 +111,8 @@ export interface NeteaseClientPreloadApi {
     disconnect(options?: { pauseFirst?: boolean }): Promise<NeteaseClientStatus>;
     getStatus(): Promise<NeteaseClientStatus>;
     getSnapshot(): Promise<NeteaseClientSnapshot | null>;
+    /** The client's own play queue, in its order. Empty when the client is not connected. */
+    getQueue(): Promise<NeteaseClientTrack[]>;
     playSong(input: NeteaseClientPlaySongInput): Promise<NeteaseClientCommandResult>;
     play(): Promise<NeteaseClientCommandResult>;
     pause(): Promise<NeteaseClientCommandResult>;
