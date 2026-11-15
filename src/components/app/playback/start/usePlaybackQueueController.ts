@@ -895,6 +895,35 @@ export function usePlaybackQueueController({
                     console.warn('[ClientTakeover] snapshot cover adoption failed', error);
                 }
             })();
+            // Lyrics: this branch returns before the shared load further down, so it asks for them
+            // itself. Same helper as the decks use, so the lyric cache, the stored lyric source and
+            // the pure-music mark end up as they would for any other online song; the client's own
+            // track changes load theirs in `handleClientTakeoverTrack`. Without this a song started
+            // from Folia in client takeover kept the empty lyric state this branch just set.
+            const takeoverSongKey = getPlaybackSongKey(song);
+            setIsLyricsLoading(true);
+            void loadOnlineSongLyrics(song, null, userId, {
+                isCurrent: () => askedSongKeyRef.current === takeoverSongKey,
+                onLyrics: resolvedLyrics => {
+                    if (askedSongKeyRef.current === takeoverSongKey) setLyrics(resolvedLyrics);
+                },
+                onPureMusicChange: isPureMusic => {
+                    setCurrentSong(prev => (
+                        !prev || !isSamePlaybackSong(prev, song) ? prev : { ...prev, isPureMusic }
+                    ));
+                },
+                onStateChange: state => {
+                    setCurrentSong(prev => (
+                        !prev || !isSamePlaybackSong(prev, song) ? prev : { ...prev, onlineLyricsState: state ?? undefined }
+                    ));
+                },
+                onDone: () => {
+                    if (askedSongKeyRef.current === takeoverSongKey) setIsLyricsLoading(false);
+                },
+            }).catch(error => {
+                console.warn('[ClientTakeover] Failed to load the requested track lyrics', error);
+                if (askedSongKeyRef.current === takeoverSongKey) setIsLyricsLoading(false);
+            });
             return;
         }
 

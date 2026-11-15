@@ -31,10 +31,13 @@ const env = vi.hoisted(() => ({
     coverFor: new Map<string, string>(),
     /** Song ids whose lyric load is held until the promise resolves. */
     lyricsGate: new Map<string, Promise<unknown>>(),
+    /** Song ids the (mocked) `isClientTakeoverSong` answers yes for. */
+    clientSongIds: new Set<string>(),
     /** How often a load that ended without lyrics asked a mod for some. */
     emptyLoadsSupplied: 0,
     lyricCallbacks: new Map<string, {
         isCurrent: () => boolean;
+        onLyrics: (lyrics: unknown) => void;
         onPureMusicChange: (isPureMusic: boolean) => void;
         onStateChange: (state: unknown) => void;
     }>(),
@@ -116,6 +119,24 @@ vi.mock('@/utils/onlineLyricsState', () => ({
         return env.lyricsStateFor.get(song.id) ?? Promise.resolve(null);
     },
 }));
+// The desktop-client takeover: only the pieces the queue controller's own branch touches. `client`
+// (env.client) is what `isClientTakeoverSong` answers; the play and the snapshot always succeed so
+// the branch runs to its lyrics.
+vi.mock('@/services/clientTakeover', () => ({
+    isClientTakeoverSong: (song: { id?: unknown } | null | undefined) => env.clientSongIds.has(String(song?.id)),
+    buildClientTakeoverDeckSrc: (id: number) => `data:audio/mpeg;base64,client-${id}`,
+    buildClientTakeoverQueueIds: (_queue: unknown, id: number) => [id],
+    buildClientTakeoverSong: (track: { id: number; name?: string }) => ({ id: track.id, name: track.name ?? '' }),
+    clientTakeoverService: {
+        playSong: async (input: { songId: number }) => {
+            env.note(`client play ${input.songId}`);
+            return { ok: true };
+        },
+        getSnapshot: async () => null,
+        getQueue: async () => [],
+        consumeExpectedTrack: () => true,
+    },
+}));
 
 const { usePlaybackQueueController } = await import('@/components/app/playback/start/usePlaybackQueueController');
 const { usePlaybackRuntimeRefs } = await import('@/components/app/playback/usePlaybackRuntimeRefs');
@@ -124,6 +145,7 @@ const { useStatusMessageStore, STATUS_LOADING_DELAY_MS, dropWaitingStatusLoaders
 const { retireBlobUrl } = await import('@/services/playbackBlobUrls');
 const { makeSongCurrent, dropPlaysInFlight } = await import('@/components/app/playback/currentSong');
 const { dropProviderSongs } = await import('@/library/app/createLibraryAccountPort');
+const { useAudioSettingsStore } = await import('@/stores/useAudioSettingsStore');
 const { removeFromCache } = await import('@/services/db');
 const { resetPlaybackStore, watchCurrentSong } = await import('./currentSongWatch');
 const { onlineFailureOf } = await import('@/services/onlineMusic/failure/onlineFailureCase');
@@ -158,6 +180,7 @@ beforeEach(() => {
     env.audioResultFor.clear();
     env.prefetchedFor.clear();
     env.coverFor.clear();
+    env.clientSongIds.clear();
     useStatusMessageStore.setState({ message: null });
     dropWaitingStatusLoaders();
 });
@@ -739,5 +762,35 @@ describe('playSong and the audio address (online)', () => {
         await queue.playSong(songA, [songA, songB]);
         expect(status()).toMatchObject({ type: 'error', text: 'failure.noAudio', countdown: { text: 'failure.skipCountdown' }, persistent: true });
         expect(watch.take().filter(line => !line.startsWith('wait audio source 1'))).toEqual([]);
+    });
+});
+
+describe('playSong on the desktop-client engine', () => {
+    // The takeover branch returns before the shared load, so it asks for the lyrics itself. It did
+    // not, and a song started from Folia kept the empty lyric state the branch sets: only tracks the
+    // client changed to on its own got lyrics (handleClientTakeoverTrack).
+    it('asks for the lyrics of a song started from Folia, not only of the client’s own track changes', async () => {
+        env.clientSongIds.add('123');
+        useAudioSettingsStore.setState({ playbackEngine: 'neteaseClient' });
+        const clientSong = {
+            id: '123', name: 'Client', artists: [], album: { id: '', name: '' }, durationMs: 1000,
+            sourceRef: { kind: 'online', providerId: 'netease', mediaId: '123' },
+        } as never;
+        try {
+            const { watch, queue } = mount();
+
+            await queue.playSong(clientSong, [clientSong]);
+
+            const notes = watch.take();
+            const said = (lines: string[], text: string) => lines.some(line => line.startsWith(text));
+            expect(said(notes, 'client play 123')).toBe(true);
+            expect(said(notes, 'wait lyrics 123')).toBe(true);
+            const callbacks = env.lyricCallbacks.get('123');
+            expect(callbacks).toBeTruthy();
+            callbacks!.onLyrics({ lines: [] });
+            expect(said(watch.take(), 'lyrics=set')).toBe(true);
+        } finally {
+            useAudioSettingsStore.setState({ playbackEngine: 'local' });
+        }
     });
 });
