@@ -77,13 +77,14 @@ const INVOKE_CHANNELS = [
     CHANNELS.pause,
     CHANNELS.toggle,
     CHANNELS.next,
+    CHANNELS.getQueue,
     CHANNELS.prev,
     CHANNELS.seek,
     CHANNELS.setVolume,
 ];
 
 describe('netease client IPC', () => {
-    it('registers exactly the twelve invoke channels', () => {
+    it('registers exactly the thirteen invoke channels', () => {
         const { handlers } = createSetup();
         expect([...handlers.keys()].sort()).toEqual([...INVOKE_CHANNELS].sort());
     });

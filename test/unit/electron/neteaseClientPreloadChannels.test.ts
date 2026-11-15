@@ -19,6 +19,7 @@ describe('netease client preload channels', () => {
             'disconnect',
             'getStatus',
             'getSnapshot',
+            'getQueue',
             'playSong',
             'play',
             'pause',
@@ -30,7 +31,7 @@ describe('netease client preload channels', () => {
             'status',
             'snapshot',
         ]);
-        expect(new Set(Object.values(CHANNELS)).size).toBe(14);
+        expect(new Set(Object.values(CHANNELS)).size).toBe(15);
 
         const block = preload.match(/const CLIENT_CHANNELS = Object\.freeze\(\{([\s\S]*?)\}\);/);
         expect(block).not.toBeNull();
